@@ -62,12 +62,86 @@ function actionAtLevel(level) {
 }
 
 function updateStats(character) {
-  character.hp = hpAtLevel(character.level);
+  const newMaxHp = hpAtLevel(character.level);
+  if (!character.maxHp) character.maxHp = newMaxHp;
+  if (character.hp > character.maxHp) character.hp = character.maxHp;
+  character.maxHp = newMaxHp;
+
   character.attack = attackAtLevel(character.level);
-  character.action = actionAtLevel(character.level);
+
+  const newMaxAction = actionAtLevel(character.level);
+  if (!character.maxAction) character.maxAction = newMaxAction;
+  if (character.action > character.maxAction) character.action = character.maxAction;
+  character.maxAction = newMaxAction;
+
   if (character.exp && typeof character.exp === 'object') {
     character.exp.max = expMaxAtLevel(character.level);
   }
+}
+
+function fmt(n) {
+  return typeof n === 'number' ? Math.round(n) : n;
+}
+
+function regen(character) {
+  const now = Date.now();
+  if (!character.lastHpUpdate) character.lastHpUpdate = now;
+  if (character.hp > 0) {
+    const elapsed = (now - character.lastHpUpdate) / 1000;
+    if (elapsed > 0) {
+      const gain = character.maxHp * 0.0008 * elapsed;
+      character.hp = Math.min(character.maxHp, character.hp + gain);
+    }
+  }
+  character.lastHpUpdate = now;
+}
+
+function addItemToInventory(c, item) {
+  c.inventory = c.inventory || [];
+  c.inventory.push(item);
+  if (c.inventory.length > 20) {
+    const minLv = Math.min(...c.inventory.map(it => it.level || 0));
+    const lowest = c.inventory.filter(it => (it.level || 0) === minLv);
+    const discard = lowest[Math.floor(Math.random() * lowest.length)];
+    c.inventory.splice(c.inventory.indexOf(discard), 1);
+  }
+}
+
+function pickupItems(c) {
+  const key = `${c.position.x},${c.position.y},${c.position.z}`;
+  const loc = worldMap[key];
+  if (!loc || !Array.isArray(loc.items)) return;
+  const remaining = [];
+  for (const item of loc.items) {
+    if (item.owner === c.name) {
+      addItemToInventory(c, { name: item.name, level: item.level });
+    } else {
+      remaining.push(item);
+    }
+  }
+  if (remaining.length > 0) loc.items = remaining; else delete loc.items;
+  saveMap();
+}
+
+function handleDeath(c, logs) {
+  const deathPos = { ...c.position };
+  if (c.inventory && c.inventory.length > 0 && Math.random() < 0.5) {
+    const idx = Math.floor(Math.random() * c.inventory.length);
+    const item = c.inventory.splice(idx, 1)[0];
+    const key = `${deathPos.x},${deathPos.y},${deathPos.z}`;
+    const loc = worldMap[key] || {};
+    loc.items = loc.items || [];
+    loc.items.push({ ...item, owner: c.name });
+    worldMap[key] = loc;
+    saveMap();
+    logs.push('你掉落了一件道具');
+  }
+  const respawn = c.bindPoint || { x: 0, y: 0, z: 0 };
+  c.position = { ...respawn };
+  c.hp = c.maxHp * 0.05;
+  c.lastHpUpdate = Date.now();
+  logs.push(`${c.name}死亡並在(${c.position.x},${c.position.y},${c.position.z})復活`);
+  pickupItems(c);
 }
 
 function findCharacterByName(name) {
@@ -116,18 +190,19 @@ app.get('/api/character', (req, res) => {
   }
   const c = user.character;
   updateStats(c);
+  regen(c);
   saveUsers();
   res.json({
     name: c.name,
     dayAge: c.dayAge,
     level: c.level,
     identity: c.identity,
-    morality: c.morality,
-    action: c.action,
-    attack: c.attack,
-    hp: c.hp,
-    exp: c.exp,
-    position: c.position,
+    morality: fmt(c.morality),
+    action: fmt(c.action),
+    attack: fmt(c.attack),
+    hp: fmt(c.hp),
+    exp: { current: fmt(c.exp.current), max: fmt(c.exp.max) },
+    position: { x: c.position.x, y: c.position.y, z: c.position.z },
     bio: c.bio || '看屁看'
   });
 });
@@ -148,18 +223,25 @@ app.post('/api/character', (req, res) => {
   if (user.character) {
     return res.status(400).json({ error: 'character exists' });
   }
+  const maxHp = hpAtLevel(1);
+  const maxAction = actionAtLevel(1);
   const character = {
     name,
     dayAge: 0,
     level: 1,
     identity: '探求者',
     morality: Math.floor(Math.random() * 41) + 30,
-    action: actionAtLevel(1),
+    action: maxAction,
+    maxAction,
     attack: attackAtLevel(1),
-    hp: hpAtLevel(1),
+    hp: maxHp,
+    maxHp,
     exp: { current: 0, max: expMaxAtLevel(1) },
     position: { x: 0, y: 0, z: 0 },
-    bio: ''
+    bio: '',
+    inventory: [],
+    bindPoint: null,
+    lastHpUpdate: Date.now()
   };
   user.character = character;
   saveUsers();
@@ -181,7 +263,8 @@ function getLocationInfo(pos) {
       owner: loc.owner || '無所屬',
       population: playersHere + npcs + monsters,
       description: loc.description || '這個人很懶，什麼都沒寫。',
-      address: pos
+      address: pos,
+      returnMark: !!loc.returnMark
     };
   }
   return {
@@ -190,12 +273,20 @@ function getLocationInfo(pos) {
     owner: '無所屬',
     population: playersHere,
     description: '嗚啦呀哈呀哈嗚啦',
-    address: pos
+    address: pos,
+    returnMark: false
   };
 }
 
 function formatLocationInfo(info) {
-  return `地區名稱：${info.name}\n等級：${info.level}\n擁有者：${info.owner}\n地區人數：${info.population}\n簡介：${info.description}\n地址：(${info.address.x},${info.address.y},${info.address.z})`;
+  const lvl = info.level === '' ? '' : fmt(info.level);
+  let text = `地區名稱：${info.name}\n等級：${lvl}\n擁有者：${info.owner}\n地區人數：${fmt(info.population)}\n簡介：${info.description}\n地址：(${info.address.x},${info.address.y},${info.address.z})`;
+  if (info.returnMark) text += '\n【回歸標記】';
+  return text;
+}
+
+function formatCharacterInfo(ch) {
+  return `名稱：${ch.name}\n日齡：${fmt(ch.dayAge)}\n等級：${fmt(ch.level)}\n身份：${ch.identity}\n道德：${fmt(ch.morality)}\n行動值：${fmt(ch.action)}\n攻擊力：${fmt(ch.attack)}\n血量：${fmt(ch.hp)}\n經驗值：${fmt(ch.exp.current)}/${fmt(ch.exp.max)}\n位置：(${ch.position.x},${ch.position.y},${ch.position.z})\n簡介：${ch.bio || ''}`;
 }
 
 app.post('/api/command', (req, res) => {
@@ -206,6 +297,8 @@ app.post('/api/command', (req, res) => {
   }
   const c = user.character;
   updateStats(c);
+  regen(c);
+  pickupItems(c);
   const cmd = command.trim();
   const logs = [];
 
@@ -216,6 +309,7 @@ app.post('/api/command', (req, res) => {
       return;
     }
     c.position = newPos;
+    pickupItems(c);
     if (cost) c.action = Math.max(0, c.action - cost);
     const info = getLocationInfo(newPos);
     logs.push(`${c.name}${verb}移動，抵達了${info.name}`);
@@ -262,16 +356,14 @@ app.post('/api/command', (req, res) => {
     } else {
       const targetChar = findCharacterByName(targetName);
       if (targetChar) {
-        logs.push(
-          `名稱：${targetChar.name}\n日齡：${targetChar.dayAge}\n等級：${targetChar.level}\n身份：${targetChar.identity}\n道德：${targetChar.morality}\n行動值：${targetChar.action}\n攻擊力：${targetChar.attack}\n血量：${targetChar.hp}\n經驗值：${targetChar.exp.current}/${targetChar.exp.max}\n位置：(${targetChar.position.x},${targetChar.position.y},${targetChar.position.z})\n簡介：${targetChar.bio || ''}`
-        );
+        logs.push(formatCharacterInfo(targetChar));
       } else {
         const foundMonster = findMonsterByName(targetName);
         if (foundMonster) {
           const m = foundMonster.monster;
           const pos = foundMonster.location.split(',').map(Number);
           logs.push(
-            `名稱：${m.name}\n等級：${m.level}\n攻擊力：${m.attack}\n血量：${m.hp}\n位置：(${pos[0]},${pos[1]},${pos[2]})`
+            `名稱：${m.name}\n等級：${fmt(m.level)}\n攻擊力：${fmt(m.attack)}\n血量：${fmt(m.hp)}\n位置：(${pos[0]},${pos[1]},${pos[2]})`
           );
         } else {
           logs.push('沒有欸你要不要再確認看看');
@@ -309,7 +401,33 @@ app.post('/api/command', (req, res) => {
       loc.monsters = loc.monsters || [];
       loc.monsters.push(monster);
       saveMap();
-      logs.push(`在${loc.name}孵化出${mName}（等級${lvl}）`);
+      logs.push(`在${loc.name}孵化出${mName}（等級${fmt(lvl)}）`);
+    }
+  } else if (cmd === '歐歐睏') {
+    const info = getLocationInfo(c.position);
+    if (info.returnMark) {
+      c.bindPoint = { ...c.position };
+      logs.push('靈魂綁定完成');
+    } else {
+      logs.push('你要確定欸');
+    }
+  } else if (cmd === '查看家當') {
+    const items = c.inventory || [];
+    if (items.length === 0) {
+      logs.push(`${c.name}的所有家當！\n這裡什麼都沒有`);
+    } else {
+      const lines = [`${c.name}的所有家當！`];
+      items.forEach((it, i) => lines.push(`${i + 1}.${it.name}`));
+      logs.push(lines.join('\n'));
+    }
+  } else if (cmd.startsWith('查看家當/')) {
+    const name = cmd.split('/')[1];
+    const items = c.inventory || [];
+    const item = items.find(it => it.name === name);
+    if (item) {
+      logs.push(`${item.name}（等級${fmt(item.level)}）`);
+    } else {
+      logs.push('醒？');
     }
   } else if (cmd === '歐拉' || cmd.startsWith('歐拉/')) {
     const targeted = cmd.startsWith('歐拉/');
@@ -332,9 +450,10 @@ app.post('/api/command', (req, res) => {
       }
       const damage = c.attack;
       tgt.hp = Math.max(0, (tgt.hp || 0) - damage);
-      logs.push(`${c.name}攻擊了${tgt.name}，造成${damage}傷害`);
+      logs.push(`${c.name}攻擊了${tgt.name}，造成${fmt(damage)}傷害`);
       if (tgt.hp <= 0) {
         logs.push(`${tgt.name}被擊敗了`);
+        if (tgtType === 'player') handleDeath(tgt, logs);
       }
     }
     if (targeted) {
@@ -372,13 +491,11 @@ app.post('/api/command', (req, res) => {
     switch (cmd) {
       case 'help':
         logs.push(
-          '指令列表：\n看看 - 查看玩家資訊\n看看/名稱 - 查詢其他單位\n佔領/地名 - 命名並佔領地區\n孵化/怪物名稱 - 在己方地區創建怪物\n歐拉 - 隨機攻擊當前單位\n歐拉/怪物名稱 - 指定攻擊怪物\nhelp - 顯示所有指令\n看路 - 檢視當前位置資訊\n前進 - y座標+1\n後退 - y座標-1\n左轉 - x座標-1\n右轉 - x座標+1\n打老鷹 - z座標+1\n挖地瓜 - z座標-1'
+          '指令列表：\n看看 - 查看玩家資訊\n看看/名稱 - 查詢其他單位\n佔領/地名 - 命名並佔領地區\n孵化/怪物名稱 - 在己方地區創建怪物\n歐歐睏 - 在有回歸標記的地區綁定復活點\n查看家當 - 顯示背包\n查看家當/道具名稱 - 查詢道具資訊\n歐拉 - 隨機攻擊當前單位\n歐拉/怪物名稱 - 指定攻擊怪物\nhelp - 顯示所有指令\n看路 - 檢視當前位置資訊\n前進 - y座標+1\n後退 - y座標-1\n左轉 - x座標-1\n右轉 - x座標+1\n打老鷹 - z座標+1\n挖地瓜 - z座標-1'
         );
         break;
       case '看看':
-        logs.push(
-          `名稱：${c.name}\n日齡：${c.dayAge}\n等級：${c.level}\n身份：${c.identity}\n道德：${c.morality}\n行動值：${c.action}\n攻擊力：${c.attack}\n血量：${c.hp}\n經驗值：${c.exp.current}/${c.exp.max}\n位置：(${c.position.x},${c.position.y},${c.position.z})\n簡介：${c.bio || ''}`
-        );
+        logs.push(formatCharacterInfo(c));
         break;
       case '看路':
         logs.push(formatLocationInfo(getLocationInfo(c.position)));
