@@ -1,7 +1,13 @@
 # Text Adventure Demo
 
 This repo contains a simple front-end prototype for a text-based adventure game
-interface. Open `index.html` in a browser to try it.
+interface.
+
+## Running
+1. Install dependencies: `npm install`
+2. Start the server: `npm start`
+3. Open `http://localhost:3000/` in your browser.
+
 
 Features:
 - Scrollable log area with search and lazy loading of older entries.
