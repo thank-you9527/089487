@@ -358,10 +358,18 @@ app.post('/api/command', async (req, res) => {
 async function init() {
   await loadUsers();
   await loadMap();
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  return app;
 }
 
-init().catch(err => {
-  console.error('Failed to initialize server', err);
-});
+if (require.main === module) {
+  init()
+    .then(() => {
+      const PORT = process.env.PORT || 3000;
+      app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+    })
+    .catch(err => {
+      console.error('Failed to initialize server', err);
+    });
+}
+
+module.exports = { app, init };
