@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>登入</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="login-container">
+    <h1>登入</h1>
+    <input id="loginUsername" maxlength="20" placeholder="帳號" />
+    <input id="loginPassword" type="password" maxlength="20" placeholder="密碼" />
+    <div class="login-buttons">
+      <button id="createUserBtn" type="button">建立用戶</button>
+      <button id="loginBtn" type="button">登入</button>
+    </div>
+    <p id="loginError" class="error hidden">帳號或密碼錯誤！</p>
+  </div>
+  <script src="login.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>建立帳號</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="register-container">
+    <h1>建立帳號</h1>
+    <input id="regUsername" maxlength="20" placeholder="帳號" />
+    <input id="regPassword" type="password" maxlength="20" placeholder="密碼" />
+    <canvas id="captchaCanvas" width="120" height="40"></canvas>
+    <input id="regCaptcha" placeholder="驗證文字" />
+    <p id="regError" class="error hidden">帳號、密碼、驗證文字不正確！請重新輸入！</p>
+    <button id="registerBtn" type="button">建立</button>
+  </div>
+  <script src="register.js"></script>
+</body>
+</html>

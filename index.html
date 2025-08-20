@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>文字冒險遊戲</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 側邊欄 -->
+  <div id="sidebar" class="sidebar">
+    <div class="sidebar-content">
+      <button id="profileBtn" type="button">玩家資料</button>
+      <button id="logoutBtn" class="logout-btn">登出</button>
+    </div>
+  </div>
+  <button id="sidebarToggle" class="sidebar-toggle">☰</button>
+
+  <!-- 遊戲主體 -->
+  <div id="game">
+    <div id="logContainer" class="log-container">
+      <div class="log-header">
+        <input id="searchInput" class="search-input hidden" maxlength="100" placeholder="搜尋..." />
+        <button id="searchToggle" class="search-btn">🔍</button>
+      </div>
+      <div id="logs" class="logs"></div>
+    </div>
+    <div id="commandBar" class="command-bar">
+      <textarea id="commandInput" maxlength="500" rows="2" placeholder="輸入指令..." class="command-input"></textarea>
+      <button id="sendBtn" class="send-btn">➤</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
