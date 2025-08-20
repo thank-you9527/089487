@@ -60,15 +60,16 @@ function initialMessage() {
   }
 }
 
-sendBtn.addEventListener('click', () => {
+sendBtn.addEventListener('click', async () => {
   const text = commandInput.value.trim();
   if (!text) return;
-  if (text === 'help') {
-    addLog('指令列表: help');
-  } else {
-    // 無預設指令時顯示玩家原始輸入
-    addLog(text);
-  }
+  const res = await fetch('/api/command', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: currentUser, command: text })
+  });
+  const data = await res.json();
+  (data.logs || []).forEach((l) => addLog(l));
   commandInput.value = '';
 });
 

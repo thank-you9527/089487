@@ -8,5 +8,6 @@ Features:
 - Command textarea (500 characters max) and a send button.
 - Sidebar menu with a logout button.
 - Welcome messages for first-time and returning visitors.
+- Basic command system processed by the backend, including movement and info commands.
 
 Logs are stored in `localStorage` for demonstration purposes only.
