@@ -9,5 +9,6 @@ Features:
 - Sidebar menu with a logout button.
 - Welcome messages for first-time and returning visitors.
 - Basic command system processed by the backend, including movement and info commands.
+- Character attributes (HP, attack, action points, and XP limits) are derived from logistic growth formulas up to level 5000.
 
 Logs are stored in `localStorage` for demonstration purposes only.

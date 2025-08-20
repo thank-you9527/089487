@@ -32,6 +32,43 @@ const userRegex = /^[A-Za-z0-9!@#$%^&*]{5,20}$/;
 const passRegex = /^[A-Za-z0-9!@#$%^&*]{8,20}$/;
 const nameRegex = /^[A-Za-z0-9\u4E00-\u9FFF.,•，。_]{1,10}$/;
 
+// attribute growth constants
+const MAX_HP = 9487000;
+const MAX_ATK = 8700000;
+const MAX_EXP = 9487000;
+const MAX_GAIN = 870000;
+const K = 0.00092;
+const CENTER = 2500;
+
+function hpAtLevel(level) {
+  return Math.round(MAX_HP / (1 + Math.exp(-K * (level - CENTER))));
+}
+
+function attackAtLevel(level) {
+  return Math.round(10 + (MAX_ATK - 10) / (1 + Math.exp(-K * (level - CENTER))));
+}
+
+function expMaxAtLevel(level) {
+  return Math.round(MAX_EXP / (1 + Math.exp(-K * (level - CENTER))));
+}
+
+function expGainForLevel(level) {
+  return Math.round(MAX_GAIN / (1 + Math.exp(-K * (level - CENTER))));
+}
+
+function actionAtLevel(level) {
+  return Math.round(100 + (10000 - 100) * (level - 1) / 4999);
+}
+
+function updateStats(character) {
+  character.hp = hpAtLevel(character.level);
+  character.attack = attackAtLevel(character.level);
+  character.action = actionAtLevel(character.level);
+  if (character.exp && typeof character.exp === 'object') {
+    character.exp.max = expMaxAtLevel(character.level);
+  }
+}
+
 app.post('/api/register', async (req, res) => {
   const { username, password } = req.body;
   if (!userRegex.test(username) || !passRegex.test(password)) {
@@ -62,6 +99,8 @@ app.get('/api/character', (req, res) => {
     return res.status(404).json({ error: 'not found' });
   }
   const c = user.character;
+  updateStats(c);
+  saveUsers();
   res.json({
     name: c.name,
     dayAge: c.dayAge,
@@ -99,10 +138,10 @@ app.post('/api/character', (req, res) => {
     level: 1,
     identity: '探求者',
     morality: Math.floor(Math.random() * 41) + 30,
-    action: 100,
-    attack: 10,
-    hp: 100,
-    exp: { current: 0, max: 10 },
+    action: actionAtLevel(1),
+    attack: attackAtLevel(1),
+    hp: hpAtLevel(1),
+    exp: { current: 0, max: expMaxAtLevel(1) },
     position: { x: 0, y: 0, z: 0 },
     bio: ''
   };
@@ -145,6 +184,7 @@ app.post('/api/command', (req, res) => {
     return res.status(400).json({ error: 'character not found' });
   }
   const c = user.character;
+  updateStats(c);
   const cmd = command.trim();
   const logs = [];
 
