@@ -53,27 +53,40 @@ function renderLogs() {
 }
 
 function initialMessage() {
-  const visited = localStorage.getItem('visited');
-  if (!visited) {
+  const firstVisit = !localStorage.getItem('visited');
+  const returnShown = sessionStorage.getItem('returnShown');
+  if (firstVisit) {
     addLog('歡迎您來到遊戲的世界，輸入help以查看指令！');
     localStorage.setItem('visited', 'true');
   } else {
     renderLogs();
-    addLog('歡迎您回到遊戲的世界，繼續冒險吧！');
+    if (!returnShown) {
+      addLog('歡迎您回到遊戲的世界，繼續冒險吧！');
+      sessionStorage.setItem('returnShown', 'true');
+    }
   }
 }
 
 sendBtn.addEventListener('click', async () => {
   const text = commandInput.value.trim();
   if (!text) return;
-  const res = await fetch('/api/command', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ command: text })
-  });
-  const data = await res.json();
-  (data.logs || []).forEach((l) => addLog(l));
-  commandInput.value = '';
+  try {
+    const res = await fetch('/api/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ command: text })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      (data.logs || []).forEach((l) => addLog(l));
+    } else {
+      addLog('指令送出失敗（請確認登入或伺服器狀態）');
+    }
+  } catch (e) {
+    addLog('無法連線到伺服器');
+  } finally {
+    commandInput.value = '';
+  }
 });
 
 searchToggle.addEventListener('click', () => {
@@ -115,6 +128,7 @@ profileBtn.addEventListener('click', () => {
 
 logoutBtn.addEventListener('click', () => {
   if (confirm('是否登出？')) {
+    sessionStorage.removeItem('returnShown');
     localStorage.clear();
     location.reload();
   }
