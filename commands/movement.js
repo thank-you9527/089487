@@ -1,4 +1,4 @@
-const move = (ctx, dx, dy, dz, cost, verb, logs) => {
+const move = async (ctx, dx, dy, dz, cost, verb, logs) => {
   const { c, pickupItems, getLocationInfo, formatLocationInfo } = ctx;
   const newPos = { x: c.position.x + dx, y: c.position.y + dy, z: c.position.z + dz };
   if (newPos.x < -90 || newPos.x > 90 || newPos.y < -180 || newPos.y > 180 || newPos.z < -100 || newPos.z > 100) {
@@ -6,7 +6,7 @@ const move = (ctx, dx, dy, dz, cost, verb, logs) => {
     return;
   }
   c.position = newPos;
-  pickupItems(c);
+  await pickupItems(c);
   if (cost) c.action = Math.max(0, c.action - cost);
   const info = getLocationInfo(newPos);
   logs.push(`${c.name}${verb}移動，抵達了${info.name}`);

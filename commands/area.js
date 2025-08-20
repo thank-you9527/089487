@@ -13,7 +13,7 @@ module.exports = {
   prefixHandlers: [
     {
       prefix: '佔領/',
-      handler: (cmd, ctx, logs) => {
+      handler: async (cmd, ctx, logs) => {
         const areaName = cmd.split('/')[1];
         ctx.c.action = Math.max(0, ctx.c.action - 1);
         const info = ctx.getLocationInfo(ctx.c.position);
@@ -45,7 +45,7 @@ module.exports = {
               npcs: existing.npcs || []
             };
             if (Math.random() < 0.05) ctx.worldMap[key].returnMark = true;
-            ctx.saveMap();
+            await ctx.saveMap();
             logs.push(ctx.formatLocationInfo(ctx.getLocationInfo(ctx.c.position)));
           } else {
             logs.push('啪，沒了');
@@ -55,7 +55,7 @@ module.exports = {
     },
     {
       prefix: '孵化/',
-      handler: (cmd, ctx, logs) => {
+      handler: async (cmd, ctx, logs) => {
         const mName = cmd.split('/')[1];
         ctx.c.action = Math.max(0, ctx.c.action - 1);
         const key = `${ctx.c.position.x},${ctx.c.position.y},${ctx.c.position.z}`;
@@ -85,7 +85,7 @@ module.exports = {
           };
           loc.monsters = loc.monsters || [];
           loc.monsters.push(monster);
-          ctx.saveMap();
+          await ctx.saveMap();
           logs.push(`在${loc.name}孵化出${mName}（等級${ctx.fmt(lvl)}）`);
         }
       }

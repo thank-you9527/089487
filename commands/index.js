@@ -13,11 +13,11 @@ for (const m of modules) {
   if (m.prefixHandlers) prefixHandlers.push(...m.prefixHandlers);
 }
 
-module.exports = function dispatch(cmd, ctx, logs) {
+module.exports = async function dispatch(cmd, ctx, logs) {
   for (const { prefix, handler } of prefixHandlers) {
-    if (cmd.startsWith(prefix)) return handler(cmd, ctx, logs);
+    if (cmd.startsWith(prefix)) return await handler(cmd, ctx, logs);
   }
   const fn = handlers[cmd];
-  if (fn) return fn(ctx, logs);
+  if (fn) return await fn(ctx, logs);
   logs.push(cmd);
 };

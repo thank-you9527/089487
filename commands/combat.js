@@ -1,11 +1,11 @@
-const attack = (cmd, targeted, ctx, logs) => {
+const attack = async (cmd, targeted, ctx, logs) => {
   const { c, users, worldMap, handleDeath, fmt, saveMap } = ctx;
   const cost = targeted ? 10 : 1;
   c.action = Math.max(0, c.action - cost);
   const key = `${c.position.x},${c.position.y},${c.position.z}`;
   const loc = worldMap[key] || {};
 
-  function resolveAttack(tgt, tgtType) {
+  async function resolveAttack(tgt, tgtType) {
     const successChance = Math.min(100, c.morality + 10);
     if (Math.random() * 100 >= successChance) {
       logs.push('攻擊失敗');
@@ -20,10 +20,10 @@ const attack = (cmd, targeted, ctx, logs) => {
     const damage = c.attack;
     tgt.hp = Math.max(0, (tgt.hp || 0) - damage);
     logs.push(`${c.name}攻擊了${tgt.name}，造成${fmt(damage)}傷害`);
-    if (tgt.hp <= 0) {
-      logs.push(`${tgt.name}被擊敗了`);
-      if (tgtType === 'player') handleDeath(tgt, logs);
-    }
+      if (tgt.hp <= 0) {
+        logs.push(`${tgt.name}被擊敗了`);
+        if (tgtType === 'player') await handleDeath(tgt, logs);
+      }
   }
 
   if (targeted) {
@@ -33,7 +33,7 @@ const attack = (cmd, targeted, ctx, logs) => {
     if (!target) {
       logs.push('你找誰？');
     } else {
-      resolveAttack(target, 'monster');
+      await resolveAttack(target, 'monster');
       if (loc.monsters) loc.monsters = loc.monsters.filter(m => m.hp > 0);
     }
   } else {
@@ -52,11 +52,11 @@ const attack = (cmd, targeted, ctx, logs) => {
     } else {
       const pick = candidates[Math.floor(Math.random() * candidates.length)];
       const target = pick.obj;
-      resolveAttack(target, pick.type);
+      await resolveAttack(target, pick.type);
       if (pick.type === 'monster' && loc.monsters) loc.monsters = loc.monsters.filter(m => m.hp > 0);
     }
   }
-  saveMap();
+  await saveMap();
 };
 
 module.exports = {

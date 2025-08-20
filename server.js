@@ -1,5 +1,5 @@
 const express = require('express');
-const fs = require('fs');
+const fs = require('fs').promises;
 const path = require('path');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
@@ -10,22 +10,50 @@ app.use(express.json());
 
 const dataPath = path.join(__dirname, 'data', 'users.json');
 let users = [];
-if (fs.existsSync(dataPath)) {
-  users = JSON.parse(fs.readFileSync(dataPath));
+async function loadUsers() {
+  try {
+    const data = await fs.readFile(dataPath, 'utf8');
+    users = JSON.parse(data);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      users = [];
+      await fs.writeFile(dataPath, JSON.stringify(users, null, 2));
+    } else {
+      console.error('Failed to read users', err);
+      users = [];
+    }
+  }
 }
-function saveUsers() {
-  fs.writeFileSync(dataPath, JSON.stringify(users, null, 2));
+async function saveUsers() {
+  try {
+    await fs.writeFile(dataPath, JSON.stringify(users, null, 2));
+  } catch (err) {
+    console.error('Failed to save users', err);
+  }
 }
 
 const mapPath = path.join(__dirname, 'data', 'map.json');
 let worldMap = {};
-if (fs.existsSync(mapPath)) {
-  worldMap = JSON.parse(fs.readFileSync(mapPath));
-} else {
-  fs.writeFileSync(mapPath, JSON.stringify({}));
+async function loadMap() {
+  try {
+    const data = await fs.readFile(mapPath, 'utf8');
+    worldMap = JSON.parse(data);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      worldMap = {};
+      await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
+    } else {
+      console.error('Failed to read map', err);
+      worldMap = {};
+    }
+  }
 }
-function saveMap() {
-  fs.writeFileSync(mapPath, JSON.stringify(worldMap, null, 2));
+async function saveMap() {
+  try {
+    await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
+  } catch (err) {
+    console.error('Failed to save map', err);
+  }
 }
 
 const userRegex = /^[A-Za-z0-9!@#$%^&*]{5,20}$/;
@@ -107,7 +135,7 @@ function addItemToInventory(c, item) {
   }
 }
 
-function pickupItems(c) {
+async function pickupItems(c) {
   const key = `${c.position.x},${c.position.y},${c.position.z}`;
   const loc = worldMap[key];
   if (!loc || !Array.isArray(loc.items)) return;
@@ -120,10 +148,10 @@ function pickupItems(c) {
     }
   }
   if (remaining.length > 0) loc.items = remaining; else delete loc.items;
-  saveMap();
+  await saveMap();
 }
 
-function handleDeath(c, logs) {
+async function handleDeath(c, logs) {
   const deathPos = { ...c.position };
   if (c.inventory && c.inventory.length > 0 && Math.random() < 0.5) {
     const idx = Math.floor(Math.random() * c.inventory.length);
@@ -133,7 +161,7 @@ function handleDeath(c, logs) {
     loc.items = loc.items || [];
     loc.items.push({ ...item, owner: c.name });
     worldMap[key] = loc;
-    saveMap();
+    await saveMap();
     logs.push('你掉落了一件道具');
   }
   const respawn = c.bindPoint || { x: 0, y: 0, z: 0 };
@@ -141,7 +169,7 @@ function handleDeath(c, logs) {
   c.hp = c.maxHp * 0.05;
   c.lastHpUpdate = Date.now();
   logs.push(`${c.name}死亡並在(${c.position.x},${c.position.y},${c.position.z})復活`);
-  pickupItems(c);
+  await pickupItems(c);
 }
 
 function findCharacterByName(name) {
@@ -169,7 +197,7 @@ app.post('/api/register', async (req, res) => {
   }
   const passwordHash = await bcrypt.hash(password, 10);
   users.push({ username, passwordHash });
-  saveUsers();
+  await saveUsers();
   res.json({ success: true });
 });
 
@@ -182,7 +210,7 @@ app.post('/api/login', async (req, res) => {
   res.json({ success: true });
 });
 
-app.get('/api/character', (req, res) => {
+app.get('/api/character', async (req, res) => {
   const { username } = req.query;
   const user = users.find(u => u.username === username);
   if (!user || !user.character) {
@@ -191,7 +219,7 @@ app.get('/api/character', (req, res) => {
   const c = user.character;
   updateStats(c);
   regen(c);
-  saveUsers();
+  await saveUsers();
   res.json({
     name: c.name,
     dayAge: c.dayAge,
@@ -207,7 +235,7 @@ app.get('/api/character', (req, res) => {
   });
 });
 
-app.post('/api/character', (req, res) => {
+app.post('/api/character', async (req, res) => {
   const { username, name } = req.body;
   const user = users.find(u => u.username === username);
   if (!user) return res.status(400).json({ error: 'user not found' });
@@ -244,7 +272,7 @@ app.post('/api/character', (req, res) => {
     lastHpUpdate: Date.now()
   };
   user.character = character;
-  saveUsers();
+  await saveUsers();
   res.json(character);
 });
 
@@ -289,7 +317,7 @@ function formatCharacterInfo(ch) {
   return `名稱：${ch.name}\n日齡：${fmt(ch.dayAge)}\n等級：${fmt(ch.level)}\n身份：${ch.identity}\n道德：${fmt(ch.morality)}\n行動值：${fmt(ch.action)}\n攻擊力：${fmt(ch.attack)}\n血量：${fmt(ch.hp)}\n經驗值：${fmt(ch.exp.current)}/${fmt(ch.exp.max)}\n位置：(${ch.position.x},${ch.position.y},${ch.position.z})\n簡介：${ch.bio || ''}`;
 }
 
-app.post('/api/command', (req, res) => {
+app.post('/api/command', async (req, res) => {
   const { username, command } = req.body;
   const user = users.find(u => u.username === username);
   if (!user || !user.character) {
@@ -298,7 +326,7 @@ app.post('/api/command', (req, res) => {
   const c = user.character;
   updateStats(c);
   regen(c);
-  pickupItems(c);
+  await pickupItems(c);
   const cmd = command.trim();
   const logs = [];
 
@@ -322,10 +350,18 @@ app.post('/api/command', (req, res) => {
   };
 
   const dispatch = require('./commands');
-  dispatch(cmd, context, logs);
-  saveUsers();
+  await dispatch(cmd, context, logs);
+  await saveUsers();
   res.json({ logs });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+async function init() {
+  await loadUsers();
+  await loadMap();
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
+
+init().catch(err => {
+  console.error('Failed to initialize server', err);
+});
