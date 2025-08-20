@@ -302,232 +302,27 @@ app.post('/api/command', (req, res) => {
   const cmd = command.trim();
   const logs = [];
 
-  function move(dx, dy, dz, cost, verb) {
-    const newPos = { x: c.position.x + dx, y: c.position.y + dy, z: c.position.z + dz };
-    if (newPos.x < -90 || newPos.x > 90 || newPos.y < -180 || newPos.y > 180 || newPos.z < -100 || newPos.z > 100) {
-      logs.push('無法移動，已達邊界');
-      return;
-    }
-    c.position = newPos;
-    pickupItems(c);
-    if (cost) c.action = Math.max(0, c.action - cost);
-    const info = getLocationInfo(newPos);
-    logs.push(`${c.name}${verb}移動，抵達了${info.name}`);
-    logs.push('');
-    logs.push(formatLocationInfo(info));
-  }
+  const context = {
+    c,
+    users,
+    worldMap,
+    saveMap,
+    getLocationInfo,
+    formatLocationInfo,
+    formatCharacterInfo,
+    findCharacterByName,
+    findMonsterByName,
+    handleDeath,
+    pickupItems,
+    attackAtLevel,
+    hpAtLevel,
+    expGainForLevel,
+    fmt,
+    areaNameRegex
+  };
 
-  if (cmd.startsWith('佔領/')) {
-    const areaName = cmd.split('/')[1];
-    c.action = Math.max(0, c.action - 1);
-    const info = getLocationInfo(c.position);
-    if (!areaName || !areaNameRegex.test(areaName) || info.owner !== '無所屬' || (info.name !== '未開拓之地' && info.name !== '荒山野嶺')) {
-      logs.push('無法佔領');
-    } else {
-      let chance = 1;
-      if (c.level >= 11 && c.level <= 50) chance = 0.9;
-      else if (c.level <= 200) chance = 0.8;
-      else if (c.level <= 450) chance = 0.7;
-      else if (c.level >= 451) chance = 0.65;
-      if (Math.random() < chance) {
-        const key = `${c.position.x},${c.position.y},${c.position.z}`;
-        const maxLv = Math.max(1, Math.floor(c.level / 10));
-        const newLevel = Math.floor(Math.random() * maxLv) + 1;
-        const existing = worldMap[key] || {};
-        worldMap[key] = {
-          name: areaName,
-          owner: c.name,
-          level: newLevel,
-          description: existing.description || '',
-          monsters: existing.monsters || [],
-          npcs: existing.npcs || []
-        };
-        if (Math.random() < 0.05) worldMap[key].returnMark = true;
-        saveMap();
-        logs.push(formatLocationInfo(getLocationInfo(c.position)));
-      } else {
-        logs.push('啪，沒了');
-      }
-    }
-  } else if (cmd.startsWith('看看/')) {
-    const targetName = cmd.split('/')[1];
-    if (!targetName) {
-      logs.push('沒有欸你要不要再確認看看');
-    } else {
-      const targetChar = findCharacterByName(targetName);
-      if (targetChar) {
-        logs.push(formatCharacterInfo(targetChar));
-      } else {
-        const foundMonster = findMonsterByName(targetName);
-        if (foundMonster) {
-          const m = foundMonster.monster;
-          const pos = foundMonster.location.split(',').map(Number);
-          logs.push(
-            `名稱：${m.name}\n等級：${fmt(m.level)}\n攻擊力：${fmt(m.attack)}\n血量：${fmt(m.hp)}\n位置：(${pos[0]},${pos[1]},${pos[2]})`
-          );
-        } else {
-          logs.push('沒有欸你要不要再確認看看');
-        }
-      }
-    }
-  } else if (cmd.startsWith('孵化/')) {
-    const mName = cmd.split('/')[1];
-    c.action = Math.max(0, c.action - 1);
-    const key = `${c.position.x},${c.position.y},${c.position.z}`;
-    const loc = worldMap[key];
-    if (!mName || !loc || loc.owner !== c.name) {
-      logs.push('你要不要看看你現在在哪裡？');
-    } else {
-      const rl = loc.level || 1;
-      const base = rl * 10;
-      let delta;
-      if (rl <= 10) delta = 5;
-      else if (rl <= 50) delta = 10;
-      else if (rl <= 150) delta = 150;
-      else if (rl <= 300) delta = 430;
-      else delta = 500;
-      let min = base - delta;
-      let max = base + delta;
-      min = Math.max(1, min);
-      max = Math.min(5000, max);
-      const lvl = Math.floor(Math.random() * (max - min + 1)) + min;
-      const monster = {
-        name: mName,
-        level: lvl,
-        attack: attackAtLevel(lvl),
-        hp: hpAtLevel(lvl),
-        exp: expGainForLevel(lvl)
-      };
-      loc.monsters = loc.monsters || [];
-      loc.monsters.push(monster);
-      saveMap();
-      logs.push(`在${loc.name}孵化出${mName}（等級${fmt(lvl)}）`);
-    }
-  } else if (cmd === '歐歐睏') {
-    const info = getLocationInfo(c.position);
-    if (info.returnMark) {
-      c.bindPoint = { ...c.position };
-      logs.push('靈魂綁定完成');
-    } else {
-      logs.push('你要確定欸');
-    }
-  } else if (cmd === '查看家當') {
-    const items = c.inventory || [];
-    if (items.length === 0) {
-      logs.push(`${c.name}的所有家當！\n這裡什麼都沒有`);
-    } else {
-      const lines = [`${c.name}的所有家當！`];
-      items.forEach((it, i) => lines.push(`${i + 1}.${it.name}`));
-      logs.push(lines.join('\n'));
-    }
-  } else if (cmd.startsWith('查看家當/')) {
-    const name = cmd.split('/')[1];
-    const items = c.inventory || [];
-    const item = items.find(it => it.name === name);
-    if (item) {
-      logs.push(`${item.name}（等級${fmt(item.level)}）`);
-    } else {
-      logs.push('醒？');
-    }
-  } else if (cmd === '歐拉' || cmd.startsWith('歐拉/')) {
-    const targeted = cmd.startsWith('歐拉/');
-    const cost = targeted ? 10 : 1;
-    c.action = Math.max(0, c.action - cost);
-    const key = `${c.position.x},${c.position.y},${c.position.z}`;
-    const loc = worldMap[key] || {};
-    let target;
-    function resolveAttack(tgt, tgtType) {
-      const successChance = Math.min(100, c.morality + 10);
-      if (Math.random() * 100 >= successChance) {
-        logs.push('攻擊失敗');
-        return;
-      }
-      let dodge = 0;
-      if (tgtType === 'player') dodge = tgt.dodge || 3;
-      if (Math.random() * 100 < dodge) {
-        logs.push(`啊！${tgt.name}抖了兩下，閃過了${c.name}的一擊！`);
-        return;
-      }
-      const damage = c.attack;
-      tgt.hp = Math.max(0, (tgt.hp || 0) - damage);
-      logs.push(`${c.name}攻擊了${tgt.name}，造成${fmt(damage)}傷害`);
-      if (tgt.hp <= 0) {
-        logs.push(`${tgt.name}被擊敗了`);
-        if (tgtType === 'player') handleDeath(tgt, logs);
-      }
-    }
-    if (targeted) {
-      const name = cmd.split('/')[1];
-      if (!loc.monsters) loc.monsters = [];
-      target = loc.monsters.find(m => m.name === name);
-      if (!target) {
-        logs.push('你找誰？');
-      } else {
-        resolveAttack(target, 'monster');
-        if (loc.monsters) loc.monsters = loc.monsters.filter(m => m.hp > 0);
-      }
-    } else {
-      const candidates = [];
-      if (Array.isArray(loc.monsters)) {
-        for (const m of loc.monsters) candidates.push({ type: 'monster', obj: m });
-      }
-      for (const u of users) {
-        const ch = u.character;
-        if (ch && ch !== c && ch.position.x === c.position.x && ch.position.y === c.position.y && ch.position.z === c.position.z) {
-          candidates.push({ type: 'player', obj: ch });
-        }
-      }
-      if (candidates.length === 0) {
-        logs.push('沒有可以攻擊的目標');
-      } else {
-        const pick = candidates[Math.floor(Math.random() * candidates.length)];
-        target = pick.obj;
-        resolveAttack(target, pick.type);
-        if (pick.type === 'monster' && loc.monsters) loc.monsters = loc.monsters.filter(m => m.hp > 0);
-      }
-    }
-    saveMap();
-  } else {
-    switch (cmd) {
-      case 'help':
-        logs.push(
-          '指令列表：\n看看 - 查看玩家資訊\n看看/名稱 - 查詢其他單位\n佔領/地名 - 命名並佔領地區\n孵化/怪物名稱 - 在己方地區創建怪物\n歐歐睏 - 在有回歸標記的地區綁定復活點\n查看家當 - 顯示背包\n查看家當/道具名稱 - 查詢道具資訊\n歐拉 - 隨機攻擊當前單位\n歐拉/怪物名稱 - 指定攻擊怪物\nhelp - 顯示所有指令\n看路 - 檢視當前位置資訊\n前進 - y座標+1\n後退 - y座標-1\n左轉 - x座標-1\n右轉 - x座標+1\n打老鷹 - z座標+1\n挖地瓜 - z座標-1'
-        );
-        break;
-      case '看看':
-        logs.push(formatCharacterInfo(c));
-        break;
-      case '看路':
-        logs.push(formatLocationInfo(getLocationInfo(c.position)));
-        break;
-      case '前進':
-        move(0, 1, 0, 1, '往前');
-        break;
-      case '後退':
-        move(0, -1, 0, 1, '往後');
-        break;
-      case '左轉':
-        move(-1, 0, 0, 1, '往左');
-        break;
-      case '左轉打方向燈':
-        move(-1, 0, 0, 0, '往左');
-        break;
-      case '右轉':
-        move(1, 0, 0, 1, '往右');
-        break;
-      case '右轉打方向燈':
-        move(1, 0, 0, 0, '往右');
-        break;
-      case '打老鷹':
-        move(0, 0, 1, 1, '往上');
-        break;
-      case '挖地瓜':
-        move(0, 0, -1, 1, '往下');
-        break;
-      default:
-        logs.push(cmd);
-    }
-  }
+  const dispatch = require('./commands');
+  dispatch(cmd, context, logs);
   saveUsers();
   res.json({ logs });
 });
