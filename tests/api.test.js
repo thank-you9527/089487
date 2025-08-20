@@ -13,12 +13,25 @@ afterAll(async () => {
 });
 
 describe('API routes', () => {
-  test('registers a new user', async () => {
+  test('register, login, and access protected routes', async () => {
     const username = `user${Date.now()}`;
-    const res = await request(app)
-      .post('/api/register')
-      .send({ username, password: 'Password!1' });
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ success: true });
+    const password = 'Password!1';
+    const reg = await request(app).post('/api/register').send({ username, password });
+    expect(reg.status).toBe(200);
+    const login = await request(app).post('/api/login').send({ username, password });
+    expect(login.status).toBe(200);
+    expect(login.body.token).toBeDefined();
+    const token = login.body.token;
+    const create = await request(app)
+      .post('/api/character')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Hero' });
+    expect(create.status).toBe(200);
+    const get = await request(app)
+      .get('/api/character')
+      .set('Authorization', `Bearer ${token}`);
+    expect(get.status).toBe(200);
+    const unauthorized = await request(app).get('/api/character');
+    expect(unauthorized.status).toBe(401);
   });
 });

@@ -1,7 +1,9 @@
 document.addEventListener('DOMContentLoaded', async () => {
-  const username = localStorage.getItem('currentUser');
-  if (!username) return;
-  const res = await fetch(`/api/character?username=${encodeURIComponent(username)}`);
+  const token = localStorage.getItem('authToken');
+  if (!token) return;
+  const res = await fetch('/api/character', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
   if (!res.ok) return;
   const c = await res.json();
   const infoDiv = document.getElementById('info');

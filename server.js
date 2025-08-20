@@ -3,6 +3,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 app.use(cors());
@@ -61,6 +62,21 @@ const userRegex = /^[A-Za-z0-9!@#$%^&*]{5,20}$/;
 const passRegex = /^[A-Za-z0-9!@#$%^&*]{8,20}$/;
 const nameRegex = /^[A-Za-z0-9\u4E00-\u9FFF.,•，。_]{1,10}$/;
 const areaNameRegex = nameRegex;
+
+const SECRET = 'dev-secret';
+
+function auth(req, res, next) {
+  const authHeader = req.headers.authorization || '';
+  const token = authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const payload = jwt.verify(token, SECRET);
+    req.username = payload.username;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+}
 
 // attribute growth constants
 const MAX_HP = 9487000;
@@ -208,12 +224,12 @@ app.post('/api/login', async (req, res) => {
   if (!user) return res.status(401).json({ error: 'invalid credentials' });
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) return res.status(401).json({ error: 'invalid credentials' });
-  res.json({ success: true });
+  const token = jwt.sign({ username }, SECRET, { expiresIn: '1h' });
+  res.json({ token });
 });
 
-app.get('/api/character', async (req, res) => {
-  const { username } = req.query;
-  const user = users.find(u => u.username === username);
+app.get('/api/character', auth, async (req, res) => {
+  const user = users.find(u => u.username === req.username);
   if (!user || !user.character) {
     return res.status(404).json({ error: 'not found' });
   }
@@ -236,14 +252,14 @@ app.get('/api/character', async (req, res) => {
   });
 });
 
-app.post('/api/character', async (req, res) => {
-  const { username, name } = req.body;
-  const user = users.find(u => u.username === username);
+app.post('/api/character', auth, async (req, res) => {
+  const { name } = req.body;
+  const user = users.find(u => u.username === req.username);
   if (!user) return res.status(400).json({ error: 'user not found' });
   if (!nameRegex.test(name)) {
     return res.status(400).json({ error: 'invalid name' });
   }
-  if (name === username) {
+  if (name === req.username) {
     return res.status(400).json({ error: 'name cannot equal username' });
   }
   if (bcrypt.compareSync(name, user.passwordHash)) {
@@ -318,9 +334,9 @@ function formatCharacterInfo(ch) {
   return `名稱：${ch.name}\n日齡：${fmt(ch.dayAge)}\n等級：${fmt(ch.level)}\n身份：${ch.identity}\n道德：${fmt(ch.morality)}\n行動值：${fmt(ch.action)}\n攻擊力：${fmt(ch.attack)}\n血量：${fmt(ch.hp)}\n經驗值：${fmt(ch.exp.current)}/${fmt(ch.exp.max)}\n位置：(${ch.position.x},${ch.position.y},${ch.position.z})\n簡介：${ch.bio || ''}`;
 }
 
-app.post('/api/command', async (req, res) => {
-  const { username, command } = req.body;
-  const user = users.find(u => u.username === username);
+app.post('/api/command', auth, async (req, res) => {
+  const { command } = req.body;
+  const user = users.find(u => u.username === req.username);
   if (!user || !user.character) {
     return res.status(400).json({ error: 'character not found' });
   }

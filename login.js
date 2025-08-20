@@ -15,7 +15,9 @@ loginBtn.addEventListener('click', async () => {
     body: JSON.stringify({ username, password })
   });
   if (res.ok) {
+    const data = await res.json();
     localStorage.setItem('currentUser', username);
+    localStorage.setItem('authToken', data.token);
     window.location.href = 'index.html';
   } else {
     errorMsg.classList.remove('hidden');

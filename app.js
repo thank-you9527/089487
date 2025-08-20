@@ -9,13 +9,16 @@ const sidebarToggle = document.getElementById('sidebarToggle');
 const logoutBtn = document.getElementById('logoutBtn');
 const profileBtn = document.getElementById('profileBtn');
 const currentUser = localStorage.getItem('currentUser');
+const token = localStorage.getItem('authToken');
 
 let logs = JSON.parse(localStorage.getItem('logs') || '[]');
 let loadedCount = 10; // 每次顯示的筆數
 
 async function ensureCharacter() {
-  if (!currentUser) return;
-  const res = await fetch(`/api/character?username=${encodeURIComponent(currentUser)}`);
+  if (!token) return;
+  const res = await fetch('/api/character', {
+    headers: { Authorization: `Bearer ${token}` }
+  });
   if (res.status === 404) {
     let name = '';
     while (true) {
@@ -25,8 +28,8 @@ async function ensureCharacter() {
     }
     await fetch('/api/character', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: currentUser, name })
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name })
     });
   }
 }
@@ -65,8 +68,8 @@ sendBtn.addEventListener('click', async () => {
   if (!text) return;
   const res = await fetch('/api/command', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: currentUser, command: text })
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ command: text })
   });
   const data = await res.json();
   (data.logs || []).forEach((l) => addLog(l));
