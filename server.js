@@ -65,6 +65,8 @@ const areaNameRegex = nameRegex;
 
 const SECRET = 'dev-secret';
 
+const captchas = new Map();
+
 function auth(req, res, next) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.split(' ')[1];
@@ -204,11 +206,24 @@ function findMonsterByName(name) {
   return null;
 }
 
+app.get('/api/captcha', (req, res) => {
+  const id = Math.random().toString(36).substring(2, 10);
+  const text = Math.random().toString(36).substring(2, 7).toUpperCase();
+  captchas.set(id, text);
+  setTimeout(() => captchas.delete(id), 5 * 60 * 1000);
+  res.json({ id, text });
+});
+
 app.post('/api/register', async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password, captchaId, captcha } = req.body;
   if (!userRegex.test(username) || !passRegex.test(password)) {
     return res.status(400).json({ error: 'invalid input' });
   }
+  const expected = captchas.get(captchaId);
+  if (!expected || expected !== captcha) {
+    return res.status(400).json({ error: 'invalid captcha' });
+  }
+  captchas.delete(captchaId);
   if (users.find(u => u.username === username)) {
     return res.status(400).json({ error: 'user exists' });
   }

@@ -16,7 +16,11 @@ describe('API routes', () => {
   test('register, login, and access protected routes', async () => {
     const username = `user${Date.now()}`;
     const password = 'Password!1';
-    const reg = await request(app).post('/api/register').send({ username, password });
+    const cap = await request(app).get('/api/captcha');
+    const { id, text } = cap.body;
+    const reg = await request(app)
+      .post('/api/register')
+      .send({ username, password, captchaId: id, captcha: text });
     expect(reg.status).toBe(200);
     const login = await request(app).post('/api/login').send({ username, password });
     expect(login.status).toBe(200);
