@@ -141,6 +141,13 @@ function regen(character) {
     }
   }
   character.lastHpUpdate = now;
+
+  if (!character.lastActionUpdate) character.lastActionUpdate = now;
+  const actionElapsed = Math.floor((now - character.lastActionUpdate) / 60000);
+  if (actionElapsed > 0) {
+    character.action = Math.min(character.maxAction, character.action + actionElapsed);
+    character.lastActionUpdate += actionElapsed * 60000;
+  }
 }
 
 function addItemToInventory(c, item) {
@@ -186,7 +193,9 @@ async function handleDeath(c, logs) {
   const respawn = c.bindPoint || { x: 0, y: 0, z: 0 };
   c.position = { ...respawn };
   c.hp = c.maxHp * 0.05;
-  c.lastHpUpdate = Date.now();
+  const now = Date.now();
+  c.lastHpUpdate = now;
+  c.lastActionUpdate = now;
   logs.push(`${c.name}死亡並在(${c.position.x},${c.position.y},${c.position.z})復活`);
   await pickupItems(c);
 }
@@ -301,7 +310,8 @@ app.post('/api/character', auth, async (req, res) => {
     bio: '',
     inventory: [],
     bindPoint: null,
-    lastHpUpdate: Date.now()
+    lastHpUpdate: Date.now(),
+    lastActionUpdate: Date.now()
   };
   user.character = character;
   await saveUsers();

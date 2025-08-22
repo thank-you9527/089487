@@ -2,6 +2,7 @@ const attack = async (cmd, targeted, ctx, logs) => {
   const { c, users, worldMap, handleDeath, fmt, saveMap } = ctx;
   const cost = targeted ? 10 : 1;
   c.action = Math.max(0, c.action - cost);
+  c.lastActionUpdate = Date.now();
   const key = `${c.position.x},${c.position.y},${c.position.z}`;
   const loc = worldMap[key] || {};
 

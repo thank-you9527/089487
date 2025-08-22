@@ -7,7 +7,10 @@ const move = async (ctx, dx, dy, dz, cost, verb, logs) => {
   }
   c.position = newPos;
   await pickupItems(c);
-  if (cost) c.action = Math.max(0, c.action - cost);
+  if (cost) {
+    c.action = Math.max(0, c.action - cost);
+    c.lastActionUpdate = Date.now();
+  }
   const info = getLocationInfo(newPos);
   logs.push(`${c.name}${verb}移動，抵達了${info.name}`);
   logs.push('');

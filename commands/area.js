@@ -16,6 +16,7 @@ module.exports = {
       handler: async (cmd, ctx, logs) => {
         const areaName = cmd.split('/')[1];
         ctx.c.action = Math.max(0, ctx.c.action - 1);
+        ctx.c.lastActionUpdate = Date.now();
         const info = ctx.getLocationInfo(ctx.c.position);
         if (
           !areaName ||
@@ -58,6 +59,7 @@ module.exports = {
       handler: async (cmd, ctx, logs) => {
         const mName = cmd.split('/')[1];
         ctx.c.action = Math.max(0, ctx.c.action - 1);
+        ctx.c.lastActionUpdate = Date.now();
         const key = `${ctx.c.position.x},${ctx.c.position.y},${ctx.c.position.z}`;
         const loc = ctx.worldMap[key];
         if (!mName || !loc || loc.owner !== ctx.c.name) {

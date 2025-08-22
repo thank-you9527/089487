@@ -38,4 +38,33 @@ describe('API routes', () => {
     const unauthorized = await request(app).get('/api/character');
     expect(unauthorized.status).toBe(401);
   });
+
+  test('action regenerates over time', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2020-01-01'));
+    const username = `user${Date.now()}`;
+    const password = 'Password!1';
+    const cap = await request(app).get('/api/captcha');
+    const { id, text } = cap.body;
+    await request(app)
+      .post('/api/register')
+      .send({ username, password, captchaId: id, captcha: text });
+    const login = await request(app).post('/api/login').send({ username, password });
+    const token = login.body.token;
+    await request(app)
+      .post('/api/character')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Hero' });
+
+    await request(app)
+      .post('/api/command')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ command: '前進' });
+
+    jest.setSystemTime(new Date(Date.now() + 60 * 1000));
+    const get = await request(app)
+      .get('/api/character')
+      .set('Authorization', `Bearer ${token}`);
+    expect(get.body.action).toBe(100);
+    jest.useRealTimers();
+  });
 });
