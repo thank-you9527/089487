@@ -1,5 +1,5 @@
 const attack = async (cmd, targeted, ctx, logs) => {
-  const { c, users, worldMap, handleDeath, fmt, saveMap } = ctx;
+  const { c, users, worldMap, handleDeath, fmt, saveMap, monsterDrop } = ctx;
   const cost = targeted ? 10 : 1;
   c.action = Math.max(0, c.action - cost);
   c.lastActionUpdate = Date.now();
@@ -21,10 +21,22 @@ const attack = async (cmd, targeted, ctx, logs) => {
     const damage = c.attack;
     tgt.hp = Math.max(0, (tgt.hp || 0) - damage);
     logs.push(`${c.name}攻擊了${tgt.name}，造成${fmt(damage)}傷害`);
-      if (tgt.hp <= 0) {
-        logs.push(`${tgt.name}被擊敗了`);
-        if (tgtType === 'player') await handleDeath(tgt, logs);
+    if (tgt.hp <= 0) {
+      logs.push(`${tgt.name}被擊敗了`);
+      if (tgtType === 'player') {
+        await handleDeath(tgt, logs);
+      } else {
+        await monsterDrop(tgt, c, loc, logs);
+        if (tgt.guardian && loc.owner) {
+          const prev = loc.name;
+          loc.name = '廢墟';
+          delete loc.owner;
+          loc.description = `本來是${prev}被${c.name}給一拳打成了廢墟`;
+          loc.monsters = [];
+          delete loc.returnMark;
+        }
       }
+    }
   }
 
   if (targeted) {

@@ -8,6 +8,9 @@ const jwt = require('jsonwebtoken');
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'landing.html'));
+});
 app.use(express.static(__dirname));
 
 const dataPath = path.join(__dirname, 'data', 'users.json');
@@ -40,6 +43,14 @@ async function loadMap() {
   try {
     const data = await fs.readFile(mapPath, 'utf8');
     worldMap = JSON.parse(data);
+    for (const key in worldMap) {
+      const loc = worldMap[key];
+      if (loc && Array.isArray(loc.monsters)) {
+        for (const m of loc.monsters) {
+          if (!m.maxHp) m.maxHp = hpAtLevel(m.level);
+        }
+      }
+    }
   } catch (err) {
     if (err.code === 'ENOENT') {
       worldMap = {};
@@ -61,11 +72,28 @@ async function saveMap() {
 const userRegex = /^[A-Za-z0-9!@#$%^&*]{5,20}$/;
 const passRegex = /^[A-Za-z0-9!@#$%^&*]{8,20}$/;
 const nameRegex = /^[A-Za-z0-9\u4E00-\u9FFF.,•，。_]{1,10}$/;
-const areaNameRegex = nameRegex;
+const areaNameRegex = /^[A-Za-z0-9\u4E00-\u9FFF]{3,11}$/;
+const monsterNameRegex = /^[A-Za-z0-9\u4E00-\u9FFF]{3,11}$/;
 
 const SECRET = 'dev-secret';
 
 const captchas = new Map();
+
+const itemsPath = path.join(__dirname, 'data', 'items.json');
+let itemsDB = [];
+async function loadItems() {
+  try {
+    const data = await fs.readFile(itemsPath, 'utf8');
+    itemsDB = JSON.parse(data);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      itemsDB = [];
+      await fs.writeFile(itemsPath, '[]');
+    } else {
+      itemsDB = [];
+    }
+  }
+}
 
 function auth(req, res, next) {
   const authHeader = req.headers.authorization || '';
@@ -161,6 +189,19 @@ function addItemToInventory(c, item) {
   }
 }
 
+function monsterDrop(mon, c, loc, logs) {
+  c.gold = c.gold || 0;
+  if (itemsDB.length === 0 || Math.random() < 0.15) {
+    const gold = mon.level * 10 + Math.floor(Math.random() * 21) - 10;
+    c.gold += gold;
+    logs.push(`獲得金幣${fmt(gold)}`);
+  } else {
+    const item = itemsDB[Math.floor(Math.random() * itemsDB.length)];
+    addItemToInventory(c, { name: item.name, level: item.level });
+    logs.push(`獲得${item.name}`);
+  }
+}
+
 async function pickupItems(c) {
   const key = `${c.position.x},${c.position.y},${c.position.z}`;
   const loc = worldMap[key];
@@ -175,6 +216,24 @@ async function pickupItems(c) {
   }
   if (remaining.length > 0) loc.items = remaining; else delete loc.items;
   await saveMap();
+}
+
+function reviveMonsters() {
+  const minute = new Date().getMinutes();
+  if (minute % 15 !== 0) return;
+  let changed = false;
+  for (const key in worldMap) {
+    const loc = worldMap[key];
+    if (!loc || !loc.owner || !Array.isArray(loc.monsters)) continue;
+    for (const m of loc.monsters) {
+      if (m.hp <= 0 && m.lastReviveMinute !== minute) {
+        m.hp = hpAtLevel(m.level);
+        m.lastReviveMinute = minute;
+        changed = true;
+      }
+    }
+  }
+  if (changed) saveMap();
 }
 
 async function handleDeath(c, logs) {
@@ -310,6 +369,7 @@ app.post('/api/character', auth, async (req, res) => {
     exp: { current: 0, max: expMaxAtLevel(1) },
     position: { x: 0, y: 0, z: 0 },
     bio: '',
+    gold: 0,
     inventory: [],
     bindPoint: null,
     lastHpUpdate: Date.now(),
@@ -367,6 +427,7 @@ app.post('/api/command', auth, async (req, res) => {
   if (!user || !user.character) {
     return res.status(400).json({ error: 'character not found' });
   }
+  reviveMonsters();
   const c = user.character;
   updateStats(c);
   regen(c);
@@ -392,7 +453,9 @@ app.post('/api/command', auth, async (req, res) => {
     hpAtLevel,
     expGainForLevel,
     fmt,
-    areaNameRegex
+    areaNameRegex,
+    monsterNameRegex,
+    monsterDrop
   };
 
   const dispatch = require('./commands');
@@ -404,6 +467,7 @@ app.post('/api/command', auth, async (req, res) => {
 async function init() {
   await loadUsers();
   await loadMap();
+  await loadItems();
   return app;
 }
 

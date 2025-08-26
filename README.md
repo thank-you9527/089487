@@ -7,6 +7,7 @@ interface.
 1. Install dependencies: `npm install`
 2. Start the server: `npm start`
 3. Open `http://localhost:3000/` in your browser.
+   The landing page offers links to register or log in before entering the game.
 
 
 Features:
@@ -16,7 +17,7 @@ Features:
 - Welcome messages for first-time and returning visitors.
 - Basic command system processed by the backend, including movement, region capture, monster spawning, and combat commands.
 - Character attributes (HP, attack, action points, and XP limits) are derived from logistic growth formulas up to level 5000.
-- Regions may randomly gain a return marker (3% chance on capture) that allows binding a respawn point via the `歐歐睏` command, placing the player into a resting state.
+- Regions may randomly gain a return marker (5% chance on capture) that allows binding a respawn point via the `歐歐睏` command, placing the player into a resting state.
 - Player health regenerates over time and death causes respawn with a chance to drop an inventory item.
 - Simple inventory with up to 20 items and commands to inspect contents.
 

@@ -10,7 +10,9 @@
         "level": 1,
         "attack": 10,
         "hp": 100,
-        "description": "一隻等級 8 的怪物"
+        "maxHp": 100,
+        "description": "一隻等級 8 的怪物",
+        "guardian": true
       }
     ]
   }
