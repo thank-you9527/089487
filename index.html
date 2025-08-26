@@ -9,9 +9,16 @@
 <body>
   <!-- 側邊欄 -->
   <div id="sidebar" class="sidebar">
-    <div class="sidebar-content">
+    <div id="sidebarMain" class="sidebar-content">
       <button id="profileBtn" type="button">玩家資料</button>
+      <button id="logManageBtn" type="button">文字資料管理</button>
       <button id="logoutBtn" class="logout-btn">登出</button>
+    </div>
+    <div id="logManager" class="sidebar-content hidden">
+      <button id="clearLogsBtn" type="button">清除文字資料</button>
+      <button id="exportLogsBtn" type="button">匯出文字資料</button>
+      <button id="downloadBtn" class="hidden" type="button">下載</button>
+      <button id="backBtn" type="button">返回</button>
     </div>
   </div>
   <button id="sidebarToggle" class="sidebar-toggle">☰</button>

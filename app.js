@@ -8,10 +8,17 @@ const sidebar = document.getElementById('sidebar');
 const sidebarToggle = document.getElementById('sidebarToggle');
 const logoutBtn = document.getElementById('logoutBtn');
 const profileBtn = document.getElementById('profileBtn');
+const logManageBtn = document.getElementById('logManageBtn');
+const sidebarMain = document.getElementById('sidebarMain');
+const logManager = document.getElementById('logManager');
+const clearLogsBtn = document.getElementById('clearLogsBtn');
+const exportLogsBtn = document.getElementById('exportLogsBtn');
+const backBtn = document.getElementById('backBtn');
+const downloadBtn = document.getElementById('downloadBtn');
 const currentUser = localStorage.getItem('currentUser');
 const token = localStorage.getItem('authToken');
-
-let logs = JSON.parse(localStorage.getItem('logs') || '[]');
+const logKey = currentUser ? `logs_${currentUser}` : 'logs';
+let logs = JSON.parse(localStorage.getItem(logKey) || '[]');
 let loadedCount = 10; // 每次顯示的筆數
 
 async function ensureCharacter() {
@@ -37,7 +44,7 @@ async function ensureCharacter() {
 function addLog(text) {
   const entry = { date: new Date().toISOString(), text };
   logs.push(entry);
-  localStorage.setItem('logs', JSON.stringify(logs));
+  localStorage.setItem(logKey, JSON.stringify(logs));
   renderLogs();
 }
 
@@ -53,11 +60,12 @@ function renderLogs() {
 }
 
 function initialMessage() {
-  const firstVisit = !localStorage.getItem('visited');
+  const firstVisitKey = `visited_${currentUser}`;
+  const firstVisit = !localStorage.getItem(firstVisitKey);
   const returnShown = sessionStorage.getItem('returnShown');
   if (firstVisit) {
     addLog('歡迎您來到遊戲的世界，輸入help以查看指令！');
-    localStorage.setItem('visited', 'true');
+    localStorage.setItem(firstVisitKey, 'true');
   } else {
     renderLogs();
     if (!returnShown) {
@@ -129,9 +137,48 @@ profileBtn.addEventListener('click', () => {
 logoutBtn.addEventListener('click', () => {
   if (confirm('是否登出？')) {
     sessionStorage.removeItem('returnShown');
-    localStorage.clear();
-    location.reload();
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('currentUser');
+    location.href = 'login.html';
   }
+});
+
+logManageBtn.addEventListener('click', () => {
+  sidebarMain.classList.add('hidden');
+  logManager.classList.remove('hidden');
+});
+
+backBtn.addEventListener('click', () => {
+  logManager.classList.add('hidden');
+  sidebarMain.classList.remove('hidden');
+  downloadBtn.classList.add('hidden');
+});
+
+clearLogsBtn.addEventListener('click', () => {
+  if (confirm('確定清除文字資料？')) {
+    localStorage.removeItem(logKey);
+    logs = [];
+    renderLogs();
+  }
+});
+
+exportLogsBtn.addEventListener('click', () => {
+  const content = logs
+    .map((l) => `[${new Date(l.date).toLocaleString()}] ${l.text}`)
+    .join('\n');
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  downloadBtn.classList.remove('hidden');
+  downloadBtn.onclick = () => {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${currentUser || 'logs'}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    downloadBtn.classList.add('hidden');
+  };
 });
 
 ensureCharacter().then(initialMessage);
