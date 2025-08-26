@@ -4,7 +4,8 @@ module.exports = {
       const info = ctx.getLocationInfo(ctx.c.position);
       if (info.returnMark) {
         ctx.c.bindPoint = { ...ctx.c.position };
-        logs.push('靈魂綁定完成');
+        ctx.c.status = '眼睛閉著';
+        logs.push('歐歐睏，一暝大一寸。');
       } else {
         logs.push('你要確定欸');
       }
@@ -45,7 +46,7 @@ module.exports = {
               monsters: existing.monsters || [],
               npcs: existing.npcs || []
             };
-            if (Math.random() < 0.05) ctx.worldMap[key].returnMark = true;
+            if (Math.random() < 0.03) ctx.worldMap[key].returnMark = true;
             await ctx.saveMap();
             logs.push(ctx.formatLocationInfo(ctx.getLocationInfo(ctx.c.position)));
           } else {

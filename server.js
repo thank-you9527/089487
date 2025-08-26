@@ -196,6 +196,7 @@ async function handleDeath(c, logs) {
   const now = Date.now();
   c.lastHpUpdate = now;
   c.lastActionUpdate = now;
+  c.status = '鼠了';
   logs.push(`${c.name}死亡並在(${c.position.x},${c.position.y},${c.position.z})復活`);
   await pickupItems(c);
 }
@@ -296,6 +297,7 @@ app.post('/api/character', auth, async (req, res) => {
   const maxAction = actionAtLevel(1);
   const character = {
     name,
+    status: '醒著',
     dayAge: 0,
     level: 1,
     identity: '探求者',
@@ -356,7 +358,7 @@ function formatLocationInfo(info) {
 }
 
 function formatCharacterInfo(ch) {
-  return `名稱：${ch.name}\n日齡：${fmt(ch.dayAge)}\n等級：${fmt(ch.level)}\n身份：${ch.identity}\n道德：${fmt(ch.morality)}\n行動值：${fmt(ch.action)}\n攻擊力：${fmt(ch.attack)}\n血量：${fmt(ch.hp)}\n經驗值：${fmt(ch.exp.current)}/${fmt(ch.exp.max)}\n位置：(${ch.position.x},${ch.position.y},${ch.position.z})\n簡介：${ch.bio || ''}`;
+  return `名稱：${ch.name}\n狀態：${ch.status}\n日齡：${fmt(ch.dayAge)}\n等級：${fmt(ch.level)}\n身份：${ch.identity}\n道德：${fmt(ch.morality)}\n行動值：${fmt(ch.action)}\n攻擊力：${fmt(ch.attack)}\n血量：${fmt(ch.hp)}\n經驗值：${fmt(ch.exp.current)}/${fmt(ch.exp.max)}\n位置：(${ch.position.x},${ch.position.y},${ch.position.z})\n簡介：${ch.bio || ''}`;
 }
 
 app.post('/api/command', auth, async (req, res) => {
@@ -370,6 +372,8 @@ app.post('/api/command', auth, async (req, res) => {
   regen(c);
   await pickupItems(c);
   const cmd = command.trim();
+  if (c.status === '鼠了' && c.hp > 0) c.status = '醒著';
+  if (c.status === '眼睛閉著' && cmd !== '歐歐睏') c.status = '醒著';
   const logs = [];
 
   const context = {
