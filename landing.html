@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>遊戲說明</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="landing-container">
+    <button id="landingLogin">登入</button>
+    <button id="landingRegister">註冊</button>
+  </div>
+  <script>
+    document.getElementById('landingLogin').addEventListener('click', () => {
+      window.location.href = 'login.html';
+    });
+    document.getElementById('landingRegister').addEventListener('click', () => {
+      window.location.href = 'register.html';
+    });
+  </script>
+</body>
+</html>
