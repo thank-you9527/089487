@@ -16,7 +16,7 @@ Features:
 - Sidebar menu with a logout button.
 - Welcome messages for first-time and returning visitors.
 - Basic command system processed by the backend, including movement, region capture, monster spawning, and combat commands.
-- Character attributes (HP, attack, action points, and XP limits) are derived from logistic growth formulas up to level 5000.
+- Character attributes (HP, attack, and XP limits) follow logistic growth, while action points increase linearly from 100 at level 1 to 300 at level 100 and remain capped thereafter.
 - Regions may randomly gain a return marker (5% chance on capture) that allows binding a respawn point via the `歐歐睏` command, placing the player into a resting state.
 - Player health regenerates over time and death causes respawn with a chance to drop an inventory item.
 - Simple inventory with up to 20 items and commands to inspect contents.

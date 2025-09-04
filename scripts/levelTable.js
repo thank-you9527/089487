@@ -21,7 +21,10 @@ function expAtLevel(level) {
 }
 
 function actionAtLevel(level) {
-  return Math.round(100 + (10000 - 100) * (level - 1) / 4999);
+  if (level <= 100) {
+    return Math.round(100 + 200 * (level - 1) / 99);
+  }
+  return 300;
 }
 
 const levels = [1,10,50,100,300,500,1000];

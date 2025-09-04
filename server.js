@@ -133,7 +133,10 @@ function expGainForLevel(level) {
 }
 
 function actionAtLevel(level) {
-  return Math.round(100 + (10000 - 100) * (level - 1) / 4999);
+  if (level <= 100) {
+    return Math.round(100 + 200 * (level - 1) / 99);
+  }
+  return 300;
 }
 
 function updateStats(character) {
