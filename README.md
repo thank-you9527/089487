@@ -5,8 +5,9 @@ interface.
 
 ## Running
 1. Install dependencies: `npm install`
-2. Start the server: `npm start`
-3. Open `http://localhost:3000/` in your browser.
+2. Set a JWT secret: `export JWT_SECRET=your-secret` (Windows use `set JWT_SECRET=your-secret`)
+3. Start the server: `npm start`
+4. Open `http://localhost:3000/` in your browser.
    The landing page offers links to register or log in before entering the game.
 
 

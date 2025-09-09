@@ -1,3 +1,4 @@
+process.env.JWT_SECRET = 'test-secret';
 const request = require('supertest');
 const path = require('path');
 const fs = require('fs').promises;

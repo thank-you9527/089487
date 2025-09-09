@@ -75,7 +75,11 @@ const nameRegex = /^[A-Za-z0-9\u4E00-\u9FFF.,•，。_]{1,10}$/;
 const areaNameRegex = /^[A-Za-z0-9\u4E00-\u9FFF]{3,11}$/;
 const monsterNameRegex = /^[A-Za-z0-9\u4E00-\u9FFF]{3,11}$/;
 
-const SECRET = 'dev-secret';
+const SECRET = process.env.JWT_SECRET;
+if (!SECRET) {
+  console.error('JWT_SECRET environment variable is required');
+  process.exit(1);
+}
 
 const captchas = new Map();
 
