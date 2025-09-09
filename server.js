@@ -29,12 +29,20 @@ async function loadUsers() {
     }
   }
 }
+let writeLock = Promise.resolve();
+function scheduleWrite(task) {
+  const next = writeLock.then(() => task());
+  writeLock = next.catch(() => {});
+  return next;
+}
 async function saveUsers() {
-  try {
-    await fs.writeFile(dataPath, JSON.stringify(users, null, 2));
-  } catch (err) {
-    console.error('Failed to save users', err);
-  }
+  return scheduleWrite(async () => {
+    try {
+      await fs.writeFile(dataPath, JSON.stringify(users, null, 2));
+    } catch (err) {
+      console.error('Failed to save users', err);
+    }
+  });
 }
 
 const mapPath = path.join(__dirname, 'data', 'map.json');
@@ -62,11 +70,13 @@ async function loadMap() {
   }
 }
 async function saveMap() {
-  try {
-    await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
-  } catch (err) {
-    console.error('Failed to save map', err);
-  }
+  return scheduleWrite(async () => {
+    try {
+      await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
+    } catch (err) {
+      console.error('Failed to save map', err);
+    }
+  });
 }
 
 const userRegex = /^[A-Za-z0-9!@#$%^&*]{5,20}$/;

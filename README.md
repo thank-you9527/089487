@@ -12,6 +12,9 @@ interface.
 
 Authentication tokens are delivered via an HttpOnly cookie; the client does not need to store them.
 
+### Data storage
+User accounts and world map data are persisted as JSON files. Writes are queued to avoid concurrent file corruption; for production use a transactional database such as SQLite or PostgreSQL.
+
 
 Features:
 - Scrollable log area with search and lazy loading of older entries.
