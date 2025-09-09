@@ -5,9 +5,15 @@ interface.
 
 ## Running
 1. Install dependencies: `npm install`
-2. Start the server: `npm start`
-3. Open `http://localhost:3000/` in your browser.
+2. Set a JWT secret: `export JWT_SECRET=your-secret` (Windows use `set JWT_SECRET=your-secret`)
+3. Start the server: `npm start`
+4. Open `http://localhost:3000/` in your browser.
    The landing page offers links to register or log in before entering the game.
+
+Authentication tokens are delivered via an HttpOnly cookie; the client does not need to store them.
+
+### Data storage
+User accounts and world map data are persisted as JSON files. Writes are queued to avoid concurrent file corruption; for production use a transactional database such as SQLite or PostgreSQL.
 
 
 Features:

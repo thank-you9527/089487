@@ -29,12 +29,20 @@ async function loadUsers() {
     }
   }
 }
+let writeLock = Promise.resolve();
+function scheduleWrite(task) {
+  const next = writeLock.then(() => task());
+  writeLock = next.catch(() => {});
+  return next;
+}
 async function saveUsers() {
-  try {
-    await fs.writeFile(dataPath, JSON.stringify(users, null, 2));
-  } catch (err) {
-    console.error('Failed to save users', err);
-  }
+  return scheduleWrite(async () => {
+    try {
+      await fs.writeFile(dataPath, JSON.stringify(users, null, 2));
+    } catch (err) {
+      console.error('Failed to save users', err);
+    }
+  });
 }
 
 const mapPath = path.join(__dirname, 'data', 'map.json');
@@ -62,11 +70,13 @@ async function loadMap() {
   }
 }
 async function saveMap() {
-  try {
-    await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
-  } catch (err) {
-    console.error('Failed to save map', err);
-  }
+  return scheduleWrite(async () => {
+    try {
+      await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
+    } catch (err) {
+      console.error('Failed to save map', err);
+    }
+  });
 }
 
 const userRegex = /^[A-Za-z0-9!@#$%^&*]{5,20}$/;
@@ -75,7 +85,11 @@ const nameRegex = /^[A-Za-z0-9\u4E00-\u9FFF.,•，。_]{1,10}$/;
 const areaNameRegex = /^[A-Za-z0-9\u4E00-\u9FFF]{3,11}$/;
 const monsterNameRegex = /^[A-Za-z0-9\u4E00-\u9FFF]{3,11}$/;
 
-const SECRET = 'dev-secret';
+const SECRET = process.env.JWT_SECRET;
+if (!SECRET) {
+  console.error('JWT_SECRET environment variable is required');
+  process.exit(1);
+}
 
 const captchas = new Map();
 
@@ -96,8 +110,9 @@ async function loadItems() {
 }
 
 function auth(req, res, next) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.split(' ')[1];
+  const cookie = req.headers.cookie || '';
+  const match = cookie.match(/token=([^;]+)/);
+  const token = match && match[1];
   if (!token) return res.status(401).json({ error: 'unauthorized' });
   try {
     const payload = jwt.verify(token, SECRET);
@@ -332,7 +347,21 @@ app.post('/api/login', async (req, res) => {
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) return res.status(401).json({ error: 'invalid credentials' });
   const token = jwt.sign({ username }, SECRET, { expiresIn: '1h' });
-  res.json({ token });
+  res.cookie('token', token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'strict'
+  });
+  res.json({ ok: true });
+});
+
+app.post('/api/logout', (req, res) => {
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'strict'
+  });
+  res.json({ ok: true });
 });
 
 app.get('/api/character', auth, async (req, res) => {
@@ -369,8 +398,13 @@ app.post('/api/character', auth, async (req, res) => {
   if (name === req.username) {
     return res.status(400).json({ error: 'name cannot equal username' });
   }
-  if (bcrypt.compareSync(name, user.passwordHash)) {
-    return res.status(400).json({ error: 'name cannot equal password' });
+  try {
+    if (await bcrypt.compare(name, user.passwordHash)) {
+      return res.status(400).json({ error: 'name cannot equal password' });
+    }
+  } catch (err) {
+    console.error('password comparison failed', err);
+    return res.status(500).json({ error: 'internal error' });
   }
   if (user.character) {
     return res.status(400).json({ error: 'character exists' });

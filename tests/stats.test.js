@@ -1,3 +1,4 @@
+process.env.JWT_SECRET = 'test-secret';
 const {
   hpAtLevel,
   attackAtLevel,
