@@ -10,6 +10,8 @@ interface.
 4. Open `http://localhost:3000/` in your browser.
    The landing page offers links to register or log in before entering the game.
 
+Authentication tokens are delivered via an HttpOnly cookie; the client does not need to store them.
+
 
 Features:
 - Scrollable log area with search and lazy loading of older entries.

@@ -100,8 +100,9 @@ async function loadItems() {
 }
 
 function auth(req, res, next) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.split(' ')[1];
+  const cookie = req.headers.cookie || '';
+  const match = cookie.match(/token=([^;]+)/);
+  const token = match && match[1];
   if (!token) return res.status(401).json({ error: 'unauthorized' });
   try {
     const payload = jwt.verify(token, SECRET);
@@ -336,7 +337,21 @@ app.post('/api/login', async (req, res) => {
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) return res.status(401).json({ error: 'invalid credentials' });
   const token = jwt.sign({ username }, SECRET, { expiresIn: '1h' });
-  res.json({ token });
+  res.cookie('token', token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'strict'
+  });
+  res.json({ ok: true });
+});
+
+app.post('/api/logout', (req, res) => {
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'strict'
+  });
+  res.json({ ok: true });
 });
 
 app.get('/api/character', auth, async (req, res) => {

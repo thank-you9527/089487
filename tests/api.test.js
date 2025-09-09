@@ -25,16 +25,15 @@ describe('API routes', () => {
     expect(reg.status).toBe(200);
     const login = await request(app).post('/api/login').send({ username, password });
     expect(login.status).toBe(200);
-    expect(login.body.token).toBeDefined();
-    const token = login.body.token;
+    const cookie = login.headers['set-cookie'][0].split(';')[0];
     const create = await request(app)
       .post('/api/character')
-      .set('Authorization', `Bearer ${token}`)
+      .set('Cookie', cookie)
       .send({ name: 'Hero' });
     expect(create.status).toBe(200);
     const get = await request(app)
       .get('/api/character')
-      .set('Authorization', `Bearer ${token}`);
+      .set('Cookie', cookie);
     expect(get.status).toBe(200);
     const unauthorized = await request(app).get('/api/character');
     expect(unauthorized.status).toBe(401);
@@ -50,21 +49,21 @@ describe('API routes', () => {
       .post('/api/register')
       .send({ username, password, captchaId: id, captcha: text });
     const login = await request(app).post('/api/login').send({ username, password });
-    const token = login.body.token;
+    const cookie = login.headers['set-cookie'][0].split(';')[0];
     await request(app)
       .post('/api/character')
-      .set('Authorization', `Bearer ${token}`)
+      .set('Cookie', cookie)
       .send({ name: 'Hero' });
 
     await request(app)
       .post('/api/command')
-      .set('Authorization', `Bearer ${token}`)
+      .set('Cookie', cookie)
       .send({ command: '前進' });
 
     jest.setSystemTime(new Date(Date.now() + 60 * 1000));
     const get = await request(app)
       .get('/api/character')
-      .set('Authorization', `Bearer ${token}`);
+      .set('Cookie', cookie);
     expect(get.body.action).toBe(100);
     jest.useRealTimers();
   });

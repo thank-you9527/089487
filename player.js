@@ -1,9 +1,5 @@
 document.addEventListener('DOMContentLoaded', async () => {
-  const token = localStorage.getItem('authToken');
-  if (!token) return;
-  const res = await fetch('/api/character', {
-    headers: { Authorization: `Bearer ${token}` }
-  });
+  const res = await fetch('/api/character', { credentials: 'include' });
   if (!res.ok) return;
   const c = await res.json();
   const infoDiv = document.getElementById('info');
