@@ -7,8 +7,8 @@ const attack = async (cmd, targeted, ctx, logs) => {
   const loc = worldMap[key] || {};
 
   async function resolveAttack(tgt, tgtType) {
-    const successChance = Math.min(100, c.morality + 10);
-    if (Math.random() * 100 >= successChance) {
+    const successChance = Math.max(0, Math.min(100, c.morality + 10));
+    if (Math.random() * 100 > successChance) {
       logs.push('攻擊失敗');
       return;
     }
