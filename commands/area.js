@@ -20,7 +20,7 @@ module.exports = {
         ctx.c.lastActionUpdate = Date.now();
         const info = ctx.getLocationInfo(ctx.c.position);
         const nameTaken = Object.values(ctx.worldMap).some(
-          loc => loc.name === areaName && loc.name !== '廢墟'
+          loc => loc && loc.name === areaName && loc.name !== '廢墟'
         );
         if (
           !areaName ||

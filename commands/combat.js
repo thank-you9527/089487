@@ -1,14 +1,17 @@
-const attack = async (cmd, targeted, ctx, logs) => {
+const attack = async (cmd, targeted, cost, ctx, logs) => {
   const { c, users, worldMap, handleDeath, fmt, saveMap, monsterDrop } = ctx;
-  const cost = targeted ? 10 : 1;
+  if (c.action < cost) {
+    logs.push('行動值不足');
+    return;
+  }
   c.action = Math.max(0, c.action - cost);
   c.lastActionUpdate = Date.now();
   const key = `${c.position.x},${c.position.y},${c.position.z}`;
   const loc = worldMap[key] || {};
 
   async function resolveAttack(tgt, tgtType) {
-    const successChance = Math.min(100, c.morality + 10);
-    if (Math.random() * 100 >= successChance) {
+    const successChance = Math.max(0, Math.min(100, c.morality + 10));
+    if (Math.random() * 100 > successChance) {
       logs.push('攻擊失敗');
       return;
     }
@@ -74,12 +77,12 @@ const attack = async (cmd, targeted, ctx, logs) => {
 
 module.exports = {
   handlers: {
-    '歐拉': (ctx, logs) => attack('歐拉', false, ctx, logs)
+    '歐拉': (ctx, logs) => attack('歐拉', false, 1, ctx, logs)
   },
   prefixHandlers: [
     {
       prefix: '歐拉/',
-      handler: (cmd, ctx, logs) => attack(cmd, true, ctx, logs)
+      handler: (cmd, ctx, logs) => attack(cmd, true, 10, ctx, logs)
     }
   ]
 };

@@ -1,5 +1,9 @@
 const move = async (ctx, dx, dy, dz, cost, verb, logs) => {
   const { c, pickupItems, getLocationInfo, formatLocationInfo } = ctx;
+  if (c.action < cost) {
+    logs.push('行動值不足');
+    return;
+  }
   const newPos = { x: c.position.x + dx, y: c.position.y + dy, z: c.position.z + dz };
   if (newPos.x < -90 || newPos.x > 90 || newPos.y < -180 || newPos.y > 180 || newPos.z < -100 || newPos.z > 100) {
     logs.push('無法移動，已達邊界');
