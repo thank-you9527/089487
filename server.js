@@ -398,8 +398,13 @@ app.post('/api/character', auth, async (req, res) => {
   if (name === req.username) {
     return res.status(400).json({ error: 'name cannot equal username' });
   }
-  if (bcrypt.compareSync(name, user.passwordHash)) {
-    return res.status(400).json({ error: 'name cannot equal password' });
+  try {
+    if (await bcrypt.compare(name, user.passwordHash)) {
+      return res.status(400).json({ error: 'name cannot equal password' });
+    }
+  } catch (err) {
+    console.error('password comparison failed', err);
+    return res.status(500).json({ error: 'internal error' });
   }
   if (user.character) {
     return res.status(400).json({ error: 'character exists' });
