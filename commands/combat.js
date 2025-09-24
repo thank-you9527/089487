@@ -32,9 +32,13 @@ const attack = async (cmd, targeted, cost, ctx, logs) => {
         await monsterDrop(tgt, c, loc, logs);
         if (tgt.guardian && loc.owner) {
           const prev = loc.name;
-          loc.name = '廢墟';
+          const preservedLevel =
+            loc.initialLevel != null ? loc.initialLevel : loc.level || 1;
+          loc.initialLevel = preservedLevel;
+          loc.level = preservedLevel;
+          loc.name = '荒山野嶺';
           delete loc.owner;
-          loc.description = `本來是${prev}被${c.name}給一拳打成了廢墟`;
+          loc.description = `守護神殞落後，${prev}再度化為荒山野嶺。`;
           loc.monsters = [];
           delete loc.returnMark;
         }
