@@ -95,6 +95,10 @@ module.exports = {
             exp: ctx.expGainForLevel(lvl)
           };
           loc.monsters = loc.monsters || [];
+          if (loc.monsters.length >= 5) {
+            logs.push('孵化上限');
+            return;
+          }
           loc.monsters.push(monster);
           await ctx.saveMap();
           logs.push(`在${loc.name}孵化出${mName}（等級${ctx.fmt(lvl)}）`);

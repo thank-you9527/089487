@@ -54,6 +54,10 @@ async function loadMap() {
     for (const key in worldMap) {
       const loc = worldMap[key];
       if (loc && Array.isArray(loc.monsters)) {
+        if (loc.monsters.length > 5) {
+          loc.monsters = loc.monsters.slice(0, 5);
+          worldMap[key].monsters = loc.monsters;
+        }
         for (const m of loc.monsters) {
           if (!m.maxHp) m.maxHp = hpAtLevel(m.level);
         }
