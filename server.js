@@ -368,6 +368,16 @@ app.post('/api/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/db-ping', async (req, res) => {
+  try {
+    const r = await require('./db')._pool.query('select 1 as ok');
+    res.json({ ok: r.rows[0].ok === 1 });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get('/api/character', auth, async (req, res) => {
   const user = users.find(u => u.username === req.username);
   if (!user || !user.character) {
