@@ -104,7 +104,7 @@ describe('area command', () => {
     const handler = area.prefixHandlers.find(h => h.prefix === '佔領/').handler;
     const key = '4,5,6';
     const logs = [];
-    const defaultInfo = { owner: '無所屬', name: '荒山野嶺' };
+    const defaultInfo = { owner: '無所屬', name: '廢墟' };
     const regularMonster = { name: '普通怪', level: 3 };
     const ctx = {
       c: {
@@ -116,7 +116,7 @@ describe('area command', () => {
       },
       worldMap: {
         [key]: {
-          name: '荒山野嶺',
+          name: '廢墟',
           owner: '無所屬',
           level: 1,
           initialLevel: 7,
@@ -183,7 +183,7 @@ describe('area command', () => {
       return randomValues.length ? randomValues.shift() : 0;
     });
 
-    await handler('佔領/荒山野嶺', ctx, logs);
+    await handler('佔領/廢墟', ctx, logs);
 
     const loc = ctx.worldMap[key];
     expect(loc.initialLevel).toBe(1);

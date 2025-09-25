@@ -111,7 +111,7 @@ describe('combat command', () => {
     }
   });
 
-  test('defeating guardian reverts area to 荒山野嶺 and preserves level', async () => {
+  test('defeating guardian reverts area to 廢墟 and preserves level', async () => {
     const logs = [];
     const originalRandom = Math.random;
     Math.random = () => 0;
@@ -160,11 +160,11 @@ describe('combat command', () => {
     }
 
     const loc = ctx.worldMap['0,0,0'];
-    expect(loc.name).toBe('荒山野嶺');
+    expect(loc.name).toBe('廢墟');
     expect(loc.owner).toBeUndefined();
     expect(loc.level).toBe(7);
     expect(loc.initialLevel).toBe(7);
-    expect(loc.description).toBe('守護神殞落後，奇幻森林再度化為荒山野嶺。');
+    expect(loc.description).toBe('守護神殞落後，奇幻森林再度化為廢墟。');
     expect(loc.monsters).toEqual([]);
     expect(loc.returnMark).toBeUndefined();
     expect(saveMap).toHaveBeenCalled();

@@ -96,9 +96,9 @@ const attack = async (cmd, targeted, cost, ctx, logs) => {
             loc.initialLevel != null ? loc.initialLevel : loc.level || 1;
           loc.initialLevel = preservedLevel;
           loc.level = preservedLevel;
-          loc.name = '荒山野嶺';
+          loc.name = '廢墟';
           delete loc.owner;
-          loc.description = `守護神殞落後，${prev}再度化為荒山野嶺。`;
+          loc.description = `守護神殞落後，${prev}再度化為廢墟。`;
           loc.monsters = [];
           delete loc.returnMark;
         }

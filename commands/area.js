@@ -41,9 +41,7 @@ module.exports = {
           !ctx.areaNameRegex.test(areaName) ||
           nameTaken ||
           info.owner !== '無所屬' ||
-          (info.name !== '未開拓之地' &&
-            info.name !== '廢墟' &&
-            info.name !== '荒山野嶺')
+          (info.name !== '未開拓之地' && info.name !== '廢墟')
         ) {
           logs.push(nameTaken ? '名稱已被使用' : '無法佔領');
         } else {
@@ -79,7 +77,7 @@ module.exports = {
             if (existing.returnMark) ctx.worldMap[key].returnMark = existing.returnMark;
             if (Math.random() < 0.05) ctx.worldMap[key].returnMark = true;
             const loc = ctx.worldMap[key];
-            if (areaName !== '未開拓之地' && areaName !== '荒山野嶺') {
+            if (areaName !== '未開拓之地' && areaName !== '廢墟') {
               const guardianLevel = rollMonsterLevel(initialLevel);
               loc.monsters.push({
                 name: `${areaName}_守護神`,

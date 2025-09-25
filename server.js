@@ -204,6 +204,12 @@ async function loadMap() {
     worldMap = JSON.parse(data);
     for (const key in worldMap) {
       const loc = worldMap[key];
+      if (loc && loc.name === '荒山野嶺') {
+        loc.name = '廢墟';
+        if (typeof loc.description === 'string') {
+          loc.description = loc.description.replace(/荒山野嶺/g, '廢墟');
+        }
+      }
       if (loc && Array.isArray(loc.monsters)) {
         if (loc.monsters.length > 5) {
           loc.monsters = loc.monsters.slice(0, 5);
