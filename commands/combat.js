@@ -1,3 +1,7 @@
+const triggerFriendlyInteraction = (c, target, logs) => {
+  logs.push(`${c.name}對${target.name}表現出友善的態度（友善行為待定）。`);
+};
+
 const attack = async (cmd, targeted, cost, ctx, logs) => {
   const { c, users, worldMap, handleDeath, fmt, saveMap, monsterDrop } = ctx;
   if (c.action < cost) {
@@ -52,6 +56,8 @@ const attack = async (cmd, targeted, cost, ctx, logs) => {
     const target = loc.monsters.find(m => m.name === name);
     if (!target) {
       logs.push('你找誰？');
+    } else if (loc.owner === c.name) {
+      triggerFriendlyInteraction(c, target, logs);
     } else {
       await resolveAttack(target, 'monster');
       if (loc.monsters) loc.monsters = loc.monsters.filter(m => m.hp > 0);
@@ -72,8 +78,14 @@ const attack = async (cmd, targeted, cost, ctx, logs) => {
     } else {
       const pick = candidates[Math.floor(Math.random() * candidates.length)];
       const target = pick.obj;
-      await resolveAttack(target, pick.type);
-      if (pick.type === 'monster' && loc.monsters) loc.monsters = loc.monsters.filter(m => m.hp > 0);
+      if (pick.type === 'monster' && loc.owner === c.name) {
+        triggerFriendlyInteraction(c, target, logs);
+      } else {
+        await resolveAttack(target, pick.type);
+        if (pick.type === 'monster' && loc.monsters) {
+          loc.monsters = loc.monsters.filter(m => m.hp > 0);
+        }
+      }
     }
   }
   await saveMap();

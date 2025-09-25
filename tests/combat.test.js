@@ -20,6 +20,78 @@ describe('combat command', () => {
     expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(5);
   });
 
+  test('attacking owned monster triggers friendly interaction without damage', async () => {
+    const logs = [];
+    const ctx = {
+      c: {
+        name: 'Hero',
+        action: 100,
+        position: { x: 0, y: 0, z: 0 },
+        morality: 50,
+        attack: 10
+      },
+      users: [],
+      worldMap: {
+        '0,0,0': {
+          owner: 'Hero',
+          monsters: [{ name: 'Slime', hp: 20, maxHp: 20 }]
+        }
+      },
+      handleDeath: jest.fn(),
+      fmt: v => v,
+      saveMap: async () => {},
+      monsterDrop: jest.fn()
+    };
+
+    await combat.prefixHandlers[0].handler('歐拉/Slime', ctx, logs);
+
+    expect(logs).toContain('Hero對Slime表現出友善的態度（友善行為待定）。');
+    expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(20);
+  });
+
+  test('random attack on owned monster triggers friendly interaction while players remain attackable', async () => {
+    const logs = [];
+    const originalRandom = Math.random;
+    const rolls = [0, 0.6, 0.3, 0.5];
+    Math.random = () => {
+      if (rolls.length === 0) return 0;
+      return rolls.shift();
+    };
+    const otherPlayer = { name: 'Visitor', hp: 30, position: { x: 0, y: 0, z: 0 } };
+    const ctx = {
+      c: {
+        name: 'Hero',
+        action: 100,
+        position: { x: 0, y: 0, z: 0 },
+        morality: 50,
+        attack: 10
+      },
+      users: [{ character: otherPlayer }],
+      worldMap: {
+        '0,0,0': {
+          owner: 'Hero',
+          monsters: [{ name: 'Slime', hp: 15, maxHp: 15 }]
+        }
+      },
+      handleDeath: jest.fn(),
+      fmt: v => v,
+      saveMap: async () => {},
+      monsterDrop: jest.fn()
+    };
+
+    // First attack should pick the monster (roll 0) and trigger friendly interaction
+    try {
+      await combat.handlers['歐拉'](ctx, logs);
+      expect(logs).toContain('Hero對Slime表現出友善的態度（友善行為待定）。');
+      expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(15);
+
+      await combat.handlers['歐拉'](ctx, logs);
+      expect(otherPlayer.hp).toBe(20);
+    } finally {
+      Math.random = originalRandom;
+    }
+  });
+
   test('defeating guardian reverts area to 荒山野嶺 and preserves level', async () => {
     const logs = [];
     const originalRandom = Math.random;
@@ -27,7 +99,7 @@ describe('combat command', () => {
     const saveMap = jest.fn().mockResolvedValue();
     const ctx = {
       c: {
-        name: 'Hero',
+        name: 'Visitor',
         action: 100,
         position: { x: 0, y: 0, z: 0 },
         morality: 50,
