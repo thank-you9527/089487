@@ -11,14 +11,10 @@ const triggerFriendlyInteraction = (ctx, target, logs) => {
     : typeof c.hp === 'number'
     ? c.hp
     : 0;
-  const spMax = typeof c.maxSp === 'number'
-    ? c.maxSp
-    : typeof c.spMax === 'number'
-    ? c.spMax
-    : typeof c.sp_max === 'number'
-    ? c.sp_max
-    : typeof c.sp === 'number'
-    ? c.sp
+  const spMax = typeof c.maxAction === 'number'
+    ? c.maxAction
+    : typeof c.action === 'number'
+    ? c.action
     : 0;
   const targetLevel = target && typeof target.level === 'number' ? target.level : null;
   const result = runAttack({
@@ -28,7 +24,8 @@ const triggerFriendlyInteraction = (ctx, target, logs) => {
       atk: typeof c.attack === 'number' ? c.attack : typeof c.atk === 'number' ? c.atk : 0,
       hp: typeof c.hp === 'number' ? c.hp : 0,
       hp_max: hpMax,
-      sp: typeof c.sp === 'number' ? c.sp : 0,
+      // 把 action 視為體力傳入 runAttack
+      sp: typeof c.action === 'number' ? c.action : 0,
       sp_max: spMax
     },
     target: { level: targetLevel }
@@ -47,14 +44,11 @@ const triggerFriendlyInteraction = (ctx, target, logs) => {
   }
 
   if (result.delta_sp) {
-    const max = spMax || 0;
-    const current = typeof c.sp === 'number' ? c.sp : 0;
+    const max = typeof c.maxAction === 'number' ? c.maxAction : typeof c.action === 'number' ? c.action : 0;
+    const current = typeof c.action === 'number' ? c.action : 0;
     const upper = max > 0 ? max : Infinity;
-    const next = Math.max(0, Math.min(upper, current + result.delta_sp));
-    c.sp = next;
-    if (typeof c.maxSp === 'number' && c.sp > c.maxSp) c.sp = c.maxSp;
-    if (typeof c.spMax === 'number' && c.sp > c.spMax) c.sp = c.spMax;
-    if (typeof c.sp_max === 'number' && c.sp > c.sp_max) c.sp = c.sp_max;
+    c.action = Math.max(0, Math.min(upper, current + result.delta_sp));
+    c.lastActionUpdate = Date.now();
   }
 
   return result;

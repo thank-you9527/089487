@@ -6,7 +6,14 @@ describe('combat command', () => {
     const originalRandom = Math.random;
     Math.random = () => 0; // guarantee lowest roll
     const ctx = {
-      c: { name: 'Hero', action: 100, position: { x: 0, y: 0, z: 0 }, morality: -20, attack: 5 },
+      c: {
+        name: 'Hero',
+        action: 100,
+        maxAction: 100,
+        position: { x: 0, y: 0, z: 0 },
+        morality: -20,
+        attack: 5
+      },
       users: [],
       worldMap: { '0,0,0': { monsters: [{ name: 'Slime', hp: 10 }] } },
       handleDeath: async () => {},
@@ -29,14 +36,13 @@ describe('combat command', () => {
       c: {
         name: 'Hero',
         action: 100,
+        maxAction: 120,
         position: { x: 0, y: 0, z: 0 },
         morality: 50,
         level: 5,
         attack: 10,
         hp: 10,
-        maxHp: 20,
-        sp: 5,
-        maxSp: 10
+        maxHp: 20
       },
       users: [],
       worldMap: {
@@ -60,7 +66,7 @@ describe('combat command', () => {
     expect(logs).toContain('你突然覺得世界其實還不錯，先深呼吸一下。');
     expect(logs).toContain('你恢復了 7 點生命。');
     expect(ctx.c.hp).toBe(17);
-    expect(ctx.c.sp).toBe(5);
+    expect(ctx.c.action).toBe(90);
     expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(20);
   });
 
@@ -74,6 +80,7 @@ describe('combat command', () => {
       c: {
         name: 'Hero',
         action: 100,
+        maxAction: 100,
         position: { x: 0, y: 0, z: 0 },
         morality: 50,
         attack: 10
@@ -113,6 +120,7 @@ describe('combat command', () => {
       c: {
         name: 'Visitor',
         action: 100,
+        maxAction: 100,
         position: { x: 0, y: 0, z: 0 },
         morality: 50,
         attack: 999
