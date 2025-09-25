@@ -8,7 +8,7 @@
  */
 
 const { Pool } = require('pg');
-const { randomUUID } = require('crypto');
+const { randomUUID, createHash } = require('crypto');
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -21,6 +21,8 @@ const pool = connectionString
       ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false } // Render/Neon-friendly
     })
   : null;
+
+const fallbackPlayerQueues = new Map();
 
 const memorySessions = new Map();
 const accountSessionIndex = new Map();
@@ -152,6 +154,62 @@ async function withTx(fn) {
     try { await client.query('ROLLBACK'); } catch {}
     throw e;
   } finally {
+    client.release();
+  }
+}
+
+function lockKeysFor(id) {
+  const hash = createHash('sha1').update(String(id)).digest();
+  const key1 = hash.readInt32BE(0);
+  const key2 = hash.readInt32BE(4);
+  return [key1, key2];
+}
+
+async function withPlayerTx(playerId, fn) {
+  if (!playerId) throw new Error('playerId is required for withPlayerTx');
+  if (!pool) {
+    const last = fallbackPlayerQueues.get(playerId) || Promise.resolve();
+    let release;
+    const next = new Promise(resolve => {
+      release = resolve;
+    });
+    fallbackPlayerQueues.set(playerId, next);
+    try {
+      await last;
+      return await fn(null);
+    } finally {
+      release();
+      if (fallbackPlayerQueues.get(playerId) === next) {
+        fallbackPlayerQueues.delete(playerId);
+      }
+    }
+  }
+
+  const client = await pool.connect();
+  const [k1, k2] = lockKeysFor(playerId);
+  let lockAcquired = false;
+  try {
+    await client.query('SELECT pg_advisory_lock($1,$2)', [k1, k2]);
+    lockAcquired = true;
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackErr) {
+      console.error('Failed to rollback player transaction', rollbackErr);
+    }
+    throw err;
+  } finally {
+    if (lockAcquired) {
+      try {
+        await client.query('SELECT pg_advisory_unlock($1,$2)', [k1, k2]);
+      } catch (unlockErr) {
+        console.error('Failed to unlock player transaction', unlockErr);
+      }
+    }
     client.release();
   }
 }
@@ -325,7 +383,7 @@ async function markEventsRead(playerId, upToId, client = pool) {
 }
 
 module.exports = {
-  init, withTx,
+  init, withTx, withPlayerTx,
   getPlayer, upsertPlayer, patchPlayer,
   appendEvent, getUnreadEvents, markEventsRead,
   createSession,

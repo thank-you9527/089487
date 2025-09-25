@@ -5,6 +5,7 @@ const bcrypt = require('bcrypt');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
+const dispatchCommands = require('./commands');
 
 const app = express();
 app.use(cors());
@@ -550,46 +551,63 @@ function formatCharacterInfo(ch) {
 }
 
 app.post('/api/command', auth, async (req, res) => {
-  const { command } = req.body;
+  const { command } = req.body || {};
   const user = users.find(u => u.username === req.username);
   if (!user || !user.character) {
     return res.status(400).json({ error: 'character not found' });
   }
-  reviveMonsters();
-  const c = user.character;
-  updateStats(c);
-  regen(c);
-  await pickupItems(c);
-  const cmd = command.trim();
-  if (c.status === '鼠了' && c.hp > 0) c.status = '醒著';
-  if (c.status === '眼睛閉著' && cmd !== '歐歐睏') c.status = '醒著';
-  const logs = [];
+  const trimmed = typeof command === 'string' ? command.trim() : '';
+  try {
+    const result = await db.withPlayerTx(req.username, async client => {
+      reviveMonsters();
+      const c = user.character;
+      updateStats(c);
+      regen(c);
+      await pickupItems(c);
+      const cmd = trimmed;
+      if (c.status === '鼠了' && c.hp > 0) c.status = '醒著';
+      if (c.status === '眼睛閉著' && cmd !== '歐歐睏') c.status = '醒著';
+      const logs = [];
 
-  const context = {
-    c,
-    users,
-    worldMap,
-    saveMap,
-    getLocationInfo,
-    formatLocationInfo,
-    formatCharacterInfo,
-    findCharacterByName,
-    findMonsterByName,
-    handleDeath,
-    pickupItems,
-    attackAtLevel,
-    hpAtLevel,
-    expGainForLevel,
-    fmt,
-    areaNameRegex,
-    monsterNameRegex,
-    monsterDrop
-  };
+      const context = {
+        c,
+        users,
+        worldMap,
+        saveMap,
+        getLocationInfo,
+        formatLocationInfo,
+        formatCharacterInfo,
+        findCharacterByName,
+        findMonsterByName,
+        handleDeath,
+        pickupItems,
+        attackAtLevel,
+        hpAtLevel,
+        expGainForLevel,
+        fmt,
+        areaNameRegex,
+        monsterNameRegex,
+        monsterDrop,
+        dbClient: client
+      };
 
-  const dispatch = require('./commands');
-  await dispatch(cmd, context, logs);
-  await saveUsers();
-  res.json({ logs });
+      await dispatchCommands(cmd, context, logs);
+      await saveUsers();
+      if (client) {
+        try {
+          await db.appendEvent(req.username, 'command', { command: cmd, logs }, client);
+        } catch (eventErr) {
+          console.error('appendEvent failed', eventErr);
+        }
+      }
+      return { logs };
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('command handler failed', err);
+    res.status(500).json({ error: 'server error' });
+  }
 });
 
 async function init() {
