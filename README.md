@@ -5,9 +5,26 @@ interface.
 
 ## Running
 1. Install dependencies: `npm install`
-2. Start the server: `npm start`
-3. Open `http://localhost:3000/` in your browser.
+2. Configure environment variables:
+   - `export DATABASE_URL=postgres://user:pass@host:5432/dbname`
+   - `export JWT_SECRET=your-secret`
+   (Windows use `set` instead of `export`.)
+3. Start the server: `npm start`
+4. Open `http://localhost:3000/` in your browser.
    The landing page offers links to register or log in before entering the game.
+
+Authentication tokens are delivered via an HttpOnly cookie; the client does not need to store them.
+
+### Data storage
+Player accounts, sessions, and character state live in PostgreSQL (see `schema.sql`).
+World data such as the shared map and item tables remain JSON-backed with queued writes to avoid concurrent corruption; migrate
+them to a transactional database for production deployments.
+
+### Observability & operations
+- **Real-time events** – Clients open `GET /api/events` (Server-Sent Events) to receive combat logs and system updates instantly. The stream accepts `Last-Event-ID`/`sinceId` to backfill the latest 200 events and emits keep-alives every 25 seconds to stay proxy-friendly.
+- **Rate limiting** – Authenticated API routes enforce a sliding-window bucket of 3 commands per second (burst 6) per account and IP. Responses expose `X-RateLimit-*` headers and return `429 { "error": "rate-limited" }` when exceeded.
+- **Slow-query logging** – Database calls slower than 200 ms (500 ms for event backfills) log `[slow-sql]` with the statement snippet to aid tuning.
+- **Event retention** – An hourly background job wins an advisory lock before deleting batches of read events older than 30 days, logging the number of rows purged.
 
 
 Features:

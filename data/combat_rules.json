@@ -1,0 +1,140 @@
+{
+  "version": "1.0.0",
+  "commands": {
+    "attack": {
+      "aliases": ["歐拉"],
+      "pattern_targeted": "歐拉/<target>"
+    }
+  },
+  "io": {
+    "contract": {
+      "input": {
+        "player": {
+          "level": "int",
+          "morality": "int 0-100",
+          "atk": "int",
+          "hp": "int",
+          "hp_max": "int",
+          "sp": "int",
+          "sp_max": "int"
+        },
+        "target": { "level": "int|null" },
+        "rng_seed": "optional"
+      },
+      "output": {
+        "event": "attack|friendly|mistake",
+        "sub_event": "string|null",
+        "delta_hp": "int",
+        "delta_sp": "int",
+        "messages": ["string"],
+        "probs": {
+          "p_friendly": "number",
+          "p_mistake": "number",
+          "p_attack": "number"
+        }
+      }
+    }
+  },
+  "rounding": {
+    "mode": "HALF_UP_TO_INT",
+    "clamp": true
+  },
+  "probability": {
+    "friendly": {
+      "type": "linear_by_morality",
+      "morality_min": 0,
+      "morality_max": 100,
+      "p_min": 0.01,
+      "p_max": 0.12
+    },
+    "mistake": {
+      "base": 0.04,
+      "level_gap_boost": {
+        "threshold_abs_gap": 50,
+        "add": 0.06
+      }
+    },
+    "attack_success": {
+      "derive": "1 - (friendly + mistake)",
+      "floor": 0.0
+    }
+  },
+  "friendly_event": {
+    "distribution": [
+      {
+        "type": "flavor_only",
+        "weight": 0.70
+      },
+      {
+        "type": "heal_hp_fraction_of_max",
+        "weight": 0.20,
+        "fraction": 0.3333334
+      },
+      {
+        "type": "heal_sp_fixed_with_rares",
+        "weight": 0.10,
+        "base_sp": 10,
+        "rares": [
+          { "p": 0.01, "sp": 50 },
+          { "p": 0.001, "sp": "full" }
+        ],
+        "cap_at_max": true
+      }
+    ],
+    "messages_pool": [
+      "你突然覺得世界其實還不錯，先深呼吸一下。",
+      "你對空氣點了個讚：加油，大家都辛苦了。",
+      "你伸個懶腰，脊椎喀啦一聲，精神好像回來一點。",
+      "你看著遠方的雲：嗯…今天的雲像棉花糖(′・ω・`)",
+      "你拍拍自己的臉：醒醒，還沒結束呢！"
+    ]
+  },
+  "mistake_event": {
+    "distribution": [
+      {
+        "type": "flavor_only",
+        "weight": 0.60
+      },
+      {
+        "type": "lose_sp_fixed",
+        "weight": 0.25,
+        "sp": 10
+      },
+      {
+        "type": "lose_hp_from_atk",
+        "weight": 0.15,
+        "random_range": { "expr_min": "ATK-10", "expr_max": "ATK+10", "min_floor": 1 },
+        "rare_overrides": [
+          { "p": 0.01, "multiplier_of_atk": 10 },
+          { "p": 0.001, "multiplier_of_atk": 30 }
+        ]
+      }
+    ],
+    "messages_pool": [
+      "你揮空了，差點打到自己的影子。",
+      "你急著出招，結果鞋帶絆到，尷尬到爆。",
+      "你把武器拿反，手一麻：欸…好痛。",
+      "你轉身太快，閃到腰，小小痛。",
+      "你想帥氣收刀，結果滑了一跤(╯°□°）╯"
+    ]
+  },
+  "rules": {
+    "flow": [
+      "計算 |ΔLv|（若 target 為空，用 0）。",
+      "p_friendly = 線性映射(M) 於 [p_min, p_max]。",
+      "p_mistake = mistake.base + (|ΔLv|>=threshold ? add : 0)。",
+      "p_attack = 1 - p_friendly - p_mistake，若 <0 則設為 0。",
+      "依三者機率抽一：friendly / mistake / attack。",
+      "若為 friendly：依 distribution 權重挑子事件；套用對應回復規則。",
+      "若為 mistake：依 distribution 權重挑子事件；先擲稀有覆蓋（若命中，直接用乘數傷害），否則以 [ATK-10, ATK+10] 均勻整數取值；套用扣除規則。",
+      "所有 HP/SP 變化先四捨五入到整數，再 clamp 到 [0, 上限]。",
+      "回傳 output 物件（含本次三類機率）。"
+    ],
+    "notes": [
+      "友善的『回復體力』子事件中，先判 0.001 → 全滿；沒中再判 0.01 → +50；都沒中 → +10。",
+      "失誤的『扣血量』子事件中，先判 0.001 → ATK×30；沒中再判 0.01 → ATK×10；都沒中 → uniform(ATK-10, ATK+10)。",
+      "失誤的基礎機率不受道德值影響，只有友善受道德值影響。",
+      "玩家等級與目標等級相差 ≥ 50 時，失誤額外 +0.06（例如 4% → 10%）。"
+    ]
+  }
+}
