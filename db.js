@@ -91,8 +91,19 @@ async function init() {
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     is_read    BOOLEAN NOT NULL DEFAULT FALSE
   );
+  CREATE TABLE IF NOT EXISTS sessions (
+    session_id  TEXT PRIMARY KEY,
+    account_id  TEXT NOT NULL,
+    issued_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at  TIMESTAMPTZ NOT NULL,
+    last_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    user_agent  TEXT,
+    ip          TEXT,
+    CONSTRAINT one_active_session UNIQUE (account_id)
+  );
   CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
   CREATE INDEX IF NOT EXISTS idx_events_player ON events(player_id, is_read, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id);
   `;
   await pool.query(ddl);
 }
