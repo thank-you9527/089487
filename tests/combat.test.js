@@ -20,21 +20,29 @@ describe('combat command', () => {
     expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(5);
   });
 
-  test('attacking owned monster triggers friendly interaction without damage', async () => {
+  test('attacking owned monster triggers runAttack friendly flow and adjusts player stats', async () => {
     const logs = [];
+    const originalRandom = Math.random;
+    const rolls = [0, 0.8, 0];
+    Math.random = jest.fn(() => (rolls.length ? rolls.shift() : 0));
     const ctx = {
       c: {
         name: 'Hero',
         action: 100,
         position: { x: 0, y: 0, z: 0 },
         morality: 50,
-        attack: 10
+        level: 5,
+        attack: 10,
+        hp: 10,
+        maxHp: 20,
+        sp: 5,
+        maxSp: 10
       },
       users: [],
       worldMap: {
         '0,0,0': {
           owner: 'Hero',
-          monsters: [{ name: 'Slime', hp: 20, maxHp: 20 }]
+          monsters: [{ name: 'Slime', hp: 20, maxHp: 20, level: 3 }]
         }
       },
       handleDeath: jest.fn(),
@@ -43,20 +51,24 @@ describe('combat command', () => {
       monsterDrop: jest.fn()
     };
 
-    await combat.prefixHandlers[0].handler('歐拉/Slime', ctx, logs);
+    try {
+      await combat.prefixHandlers[0].handler('歐拉/Slime', ctx, logs);
+    } finally {
+      Math.random = originalRandom;
+    }
 
-    expect(logs).toContain('Hero對Slime表現出友善的態度（友善行為待定）。');
+    expect(logs).toContain('你突然覺得世界其實還不錯，先深呼吸一下。');
+    expect(logs).toContain('你恢復了 7 點生命。');
+    expect(ctx.c.hp).toBe(17);
+    expect(ctx.c.sp).toBe(5);
     expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(20);
   });
 
   test('random attack on owned monster triggers friendly interaction while players remain attackable', async () => {
     const logs = [];
     const originalRandom = Math.random;
-    const rolls = [0, 0.6, 0.3, 0.5];
-    Math.random = () => {
-      if (rolls.length === 0) return 0;
-      return rolls.shift();
-    };
+    const rolls = [0, 0, 0, 0, 0.6, 0, 0.5];
+    Math.random = jest.fn(() => (rolls.length ? rolls.shift() : 0));
     const otherPlayer = { name: 'Visitor', hp: 30, position: { x: 0, y: 0, z: 0 } };
     const ctx = {
       c: {
@@ -82,7 +94,7 @@ describe('combat command', () => {
     // First attack should pick the monster (roll 0) and trigger friendly interaction
     try {
       await combat.handlers['歐拉'](ctx, logs);
-      expect(logs).toContain('Hero對Slime表現出友善的態度（友善行為待定）。');
+      expect(logs).toContain('你突然覺得世界其實還不錯，先深呼吸一下。');
       expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(15);
 
       await combat.handlers['歐拉'](ctx, logs);

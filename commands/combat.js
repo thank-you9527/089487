@@ -1,5 +1,63 @@
-const triggerFriendlyInteraction = (c, target, logs) => {
-  logs.push(`${c.name}對${target.name}表現出友善的態度（友善行為待定）。`);
+const { runAttack } = require('./attack');
+
+const triggerFriendlyInteraction = (ctx, target, logs) => {
+  const { c } = ctx;
+  const hpMax = typeof c.maxHp === 'number'
+    ? c.maxHp
+    : typeof c.hpMax === 'number'
+    ? c.hpMax
+    : typeof c.hp_max === 'number'
+    ? c.hp_max
+    : typeof c.hp === 'number'
+    ? c.hp
+    : 0;
+  const spMax = typeof c.maxSp === 'number'
+    ? c.maxSp
+    : typeof c.spMax === 'number'
+    ? c.spMax
+    : typeof c.sp_max === 'number'
+    ? c.sp_max
+    : typeof c.sp === 'number'
+    ? c.sp
+    : 0;
+  const targetLevel = target && typeof target.level === 'number' ? target.level : null;
+  const result = runAttack({
+    player: {
+      level: typeof c.level === 'number' ? c.level : 1,
+      morality: typeof c.morality === 'number' ? c.morality : 0,
+      atk: typeof c.attack === 'number' ? c.attack : typeof c.atk === 'number' ? c.atk : 0,
+      hp: typeof c.hp === 'number' ? c.hp : 0,
+      hp_max: hpMax,
+      sp: typeof c.sp === 'number' ? c.sp : 0,
+      sp_max: spMax
+    },
+    target: { level: targetLevel }
+  });
+
+  for (const message of result.messages) {
+    logs.push(message);
+  }
+
+  if (result.delta_hp) {
+    const max = hpMax || 0;
+    const current = typeof c.hp === 'number' ? c.hp : 0;
+    const upper = max > 0 ? max : Infinity;
+    const next = Math.max(0, Math.min(upper, current + result.delta_hp));
+    c.hp = next;
+  }
+
+  if (result.delta_sp) {
+    const max = spMax || 0;
+    const current = typeof c.sp === 'number' ? c.sp : 0;
+    const upper = max > 0 ? max : Infinity;
+    const next = Math.max(0, Math.min(upper, current + result.delta_sp));
+    c.sp = next;
+    if (typeof c.maxSp === 'number' && c.sp > c.maxSp) c.sp = c.maxSp;
+    if (typeof c.spMax === 'number' && c.sp > c.spMax) c.sp = c.spMax;
+    if (typeof c.sp_max === 'number' && c.sp > c.sp_max) c.sp = c.sp_max;
+  }
+
+  return result;
 };
 
 const attack = async (cmd, targeted, cost, ctx, logs) => {
@@ -57,7 +115,7 @@ const attack = async (cmd, targeted, cost, ctx, logs) => {
     if (!target) {
       logs.push('你找誰？');
     } else if (loc.owner === c.name) {
-      triggerFriendlyInteraction(c, target, logs);
+      triggerFriendlyInteraction(ctx, target, logs);
     } else {
       await resolveAttack(target, 'monster');
       if (loc.monsters) loc.monsters = loc.monsters.filter(m => m.hp > 0);
@@ -79,7 +137,7 @@ const attack = async (cmd, targeted, cost, ctx, logs) => {
       const pick = candidates[Math.floor(Math.random() * candidates.length)];
       const target = pick.obj;
       if (pick.type === 'monster' && loc.owner === c.name) {
-        triggerFriendlyInteraction(c, target, logs);
+        triggerFriendlyInteraction(ctx, target, logs);
       } else {
         await resolveAttack(target, pick.type);
         if (pick.type === 'monster' && loc.monsters) {
