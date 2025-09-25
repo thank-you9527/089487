@@ -5,9 +5,20 @@ interface.
 
 ## Running
 1. Install dependencies: `npm install`
-2. Start the server: `npm start`
-3. Open `http://localhost:3000/` in your browser.
+2. Configure environment variables:
+   - `export DATABASE_URL=postgres://user:pass@host:5432/dbname`
+   - `export JWT_SECRET=your-secret`
+   (Windows use `set` instead of `export`.)
+3. Start the server: `npm start`
+4. Open `http://localhost:3000/` in your browser.
    The landing page offers links to register or log in before entering the game.
+
+Authentication tokens are delivered via an HttpOnly cookie; the client does not need to store them.
+
+### Data storage
+Player accounts, sessions, and character state live in PostgreSQL (see `schema.sql`).
+World data such as the shared map and item tables remain JSON-backed with queued writes to avoid concurrent corruption; migrate
+them to a transactional database for production deployments.
 
 
 Features:

@@ -16,16 +16,32 @@ const exportLogsBtn = document.getElementById('exportLogsBtn');
 const backBtn = document.getElementById('backBtn');
 const downloadBtn = document.getElementById('downloadBtn');
 const currentUser = localStorage.getItem('currentUser');
-const token = localStorage.getItem('authToken');
 const logKey = currentUser ? `logs_${currentUser}` : 'logs';
 let logs = JSON.parse(localStorage.getItem(logKey) || '[]');
 let loadedCount = 10; // 每次顯示的筆數
+let sessionExpired = false;
+
+function handleSessionExpired() {
+  if (sessionExpired) return;
+  sessionExpired = true;
+  alert('登入已失效，請重新登入');
+  sessionStorage.removeItem('returnShown');
+  localStorage.removeItem('currentUser');
+  window.location.href = 'login.html';
+}
+
+async function handleUnauthorizedResponse(res) {
+  if (res.status !== 401) return false;
+  const data = await res.json().catch(() => ({}));
+  if (data && data.error === 'session-gone') {
+    handleSessionExpired();
+  }
+  return true;
+}
 
 async function ensureCharacter() {
-  if (!token) return;
-  const res = await fetch('/api/character', {
-    headers: { Authorization: `Bearer ${token}` }
-  });
+  const res = await fetch('/api/character', { credentials: 'include' });
+  if (await handleUnauthorizedResponse(res)) return;
   if (res.status === 404) {
     let name = '';
     while (true) {
@@ -35,8 +51,9 @@ async function ensureCharacter() {
     }
     await fetch('/api/character', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ name })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+      credentials: 'include'
     });
   }
 }
@@ -81,12 +98,15 @@ sendBtn.addEventListener('click', async () => {
   try {
     const res = await fetch('/api/command', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ command: text })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: text }),
+      credentials: 'include'
     });
     if (res.ok) {
       const data = await res.json();
       (data.logs || []).forEach((l) => addLog(l));
+    } else if (await handleUnauthorizedResponse(res)) {
+      return;
     } else {
       addLog('指令送出失敗（請確認登入或伺服器狀態）');
     }
@@ -134,12 +154,20 @@ profileBtn.addEventListener('click', () => {
   window.location.href = 'player.html';
 });
 
-logoutBtn.addEventListener('click', () => {
+logoutBtn.addEventListener('click', async () => {
   if (confirm('是否登出？')) {
-    sessionStorage.removeItem('returnShown');
-    localStorage.removeItem('authToken');
-    localStorage.removeItem('currentUser');
-    location.href = 'login.html';
+    try {
+      const res = await fetch('/api/logout', { method: 'POST', credentials: 'include' });
+      if (res.ok) {
+        sessionStorage.removeItem('returnShown');
+        localStorage.removeItem('currentUser');
+        location.href = 'login.html';
+      } else {
+        await handleUnauthorizedResponse(res);
+      }
+    } catch (e) {
+      addLog('登出時發生錯誤，請稍後再試。');
+    }
   }
 });
 

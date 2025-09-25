@@ -5,6 +5,23 @@ const bcrypt = require('bcrypt');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 
+function assertEnvOrExit() {
+  const missing = [];
+  if (!process.env.DATABASE_URL) missing.push('DATABASE_URL');
+  if (!process.env.JWT_SECRET) missing.push('JWT_SECRET');
+  if (missing.length) {
+    for (const key of missing) {
+      console.error(`Missing required environment variable: ${key}`);
+    }
+    process.exit(1);
+  }
+}
+
+assertEnvOrExit();
+
+const db = require('./db');
+const dispatchCommands = require('./commands');
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -13,32 +30,16 @@ app.get('/', (req, res) => {
 });
 app.use(express.static(__dirname));
 
-const dataPath = path.join(__dirname, 'data', 'users.json');
-let users = [];
-async function loadUsers() {
-  try {
-    const data = await fs.readFile(dataPath, 'utf8');
-    users = JSON.parse(data);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      users = [];
-      await fs.writeFile(dataPath, JSON.stringify(users, null, 2));
-    } else {
-      console.error('Failed to read users', err);
-      users = [];
-    }
-  }
-}
-async function saveUsers() {
-  try {
-    await fs.writeFile(dataPath, JSON.stringify(users, null, 2));
-  } catch (err) {
-    console.error('Failed to save users', err);
-  }
-}
-
 const mapPath = path.join(__dirname, 'data', 'map.json');
 let worldMap = {};
+let mapWriteLock = Promise.resolve();
+
+function scheduleMapWrite(task) {
+  const next = mapWriteLock.then(() => task());
+  mapWriteLock = next.catch(() => {});
+  return next;
+}
+
 async function loadMap() {
   try {
     const data = await fs.readFile(mapPath, 'utf8');
@@ -46,6 +47,10 @@ async function loadMap() {
     for (const key in worldMap) {
       const loc = worldMap[key];
       if (loc && Array.isArray(loc.monsters)) {
+        if (loc.monsters.length > 5) {
+          loc.monsters = loc.monsters.slice(0, 5);
+          worldMap[key].monsters = loc.monsters;
+        }
         for (const m of loc.monsters) {
           if (!m.maxHp) m.maxHp = hpAtLevel(m.level);
         }
@@ -62,11 +67,109 @@ async function loadMap() {
   }
 }
 async function saveMap() {
-  try {
-    await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
-  } catch (err) {
-    console.error('Failed to save map', err);
-  }
+  return scheduleMapWrite(async () => {
+    try {
+      await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
+    } catch (err) {
+      console.error('Failed to save map', err);
+    }
+  });
+}
+
+function hydrateCharacter(row) {
+  if (!row) return null;
+  const position = {
+    x: row.x ?? 0,
+    y: row.y ?? 0,
+    z: row.z ?? 0
+  };
+  const bindPoint =
+    row.bindX != null && row.bindY != null && row.bindZ != null
+      ? { x: row.bindX, y: row.bindY, z: row.bindZ }
+      : null;
+  const expCurrent = typeof row.expCurrent === 'number' ? row.expCurrent : 0;
+  const expMax = typeof row.expMax === 'number' ? row.expMax : 0;
+  const maxHp = typeof row.hpMax === 'number' ? row.hpMax : Math.max(1, row.hp || 1);
+  const maxAction =
+    typeof row.actionMax === 'number' ? row.actionMax : Math.max(0, row.action || 0);
+  return {
+    accountId: row.id,
+    name: row.name,
+    status: row.status,
+    dayAge: row.dayAge ?? 0,
+    level: row.level ?? 1,
+    identity: row.identity ?? '探求者',
+    morality: row.morality ?? 50,
+    action: row.action ?? maxAction,
+    maxAction,
+    attack: row.attack ?? 0,
+    hp: row.hp ?? maxHp,
+    maxHp,
+    exp: { current: expCurrent, max: expMax },
+    position,
+    bio: row.bio || '',
+    gold: row.gold ?? 0,
+    inventory: Array.isArray(row.inventory) ? row.inventory : [],
+    bindPoint,
+    dodge: row.dodge ?? 3,
+    lastHpUpdate: row.lastHpUpdate ?? Date.now(),
+    lastActionUpdate: row.lastActionUpdate ?? Date.now()
+  };
+}
+
+function clampNumber(value, min, max) {
+  const n = typeof value === 'number' ? value : Number(value) || 0;
+  if (typeof max === 'number') return Math.max(min, Math.min(max, n));
+  return Math.max(min, n);
+}
+
+function serializeCharacter(character) {
+  const maxHp = clampNumber(
+    character.maxHp ?? character.hpMax ?? character.hp ?? 1,
+    1
+  );
+  const actionMax = clampNumber(
+    character.maxAction ?? character.actionMax ?? character.action ?? 0,
+    0
+  );
+  const hp = clampNumber(character.hp, 0, maxHp);
+  const action = clampNumber(character.action, 0, actionMax);
+  const morality = clampNumber(character.morality, 0, 100);
+  const expCurrent = clampNumber(character.exp?.current, 0);
+  const expMax = clampNumber(character.exp?.max ?? expCurrent, 0);
+  const bind = character.bindPoint || null;
+  return {
+    id: character.accountId,
+    name: character.name,
+    status: character.status,
+    identity: character.identity,
+    dayAge: character.dayAge ?? 0,
+    morality,
+    level: character.level ?? 1,
+    attack: clampNumber(character.attack, 0),
+    hp,
+    hpMax: maxHp,
+    action,
+    actionMax,
+    expCurrent,
+    expMax,
+    x: character.position?.x ?? 0,
+    y: character.position?.y ?? 0,
+    z: character.position?.z ?? 0,
+    bindX: bind ? bind.x : null,
+    bindY: bind ? bind.y : null,
+    bindZ: bind ? bind.z : null,
+    gold: clampNumber(character.gold, 0),
+    dodge: clampNumber(character.dodge, 0),
+    inventory: Array.isArray(character.inventory) ? character.inventory : [],
+    lastHpUpdate: character.lastHpUpdate ?? Date.now(),
+    lastActionUpdate: character.lastActionUpdate ?? Date.now()
+  };
+}
+
+function responseCharacter(character) {
+  const { accountId, ...rest } = character;
+  return rest;
 }
 
 const userRegex = /^[A-Za-z0-9!@#$%^&*]{5,20}$/;
@@ -75,9 +178,35 @@ const nameRegex = /^[A-Za-z0-9\u4E00-\u9FFF.,•，。_]{1,10}$/;
 const areaNameRegex = /^[A-Za-z0-9\u4E00-\u9FFF]{3,11}$/;
 const monsterNameRegex = /^[A-Za-z0-9\u4E00-\u9FFF]{3,11}$/;
 
-const SECRET = 'dev-secret';
+const SECRET = process.env.JWT_SECRET;
+if (!SECRET) {
+  console.error('JWT_SECRET environment variable is required');
+  process.exit(1);
+}
 
 const captchas = new Map();
+
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const COOKIE_BASE = { httpOnly: true, secure: true, sameSite: 'lax' };
+const COOKIE_WITH_MAX_AGE = { ...COOKIE_BASE, maxAge: SESSION_TTL_MS };
+
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  if (!header) return {};
+  return header.split(';').reduce((acc, part) => {
+    const [rawKey, ...rest] = part.split('=');
+    if (!rawKey) return acc;
+    const key = rawKey.trim();
+    const value = rest.join('=').trim();
+    if (!key) return acc;
+    acc[key] = decodeURIComponent(value || '');
+    return acc;
+  }, {});
+}
+
+function clearAuthCookie(res) {
+  res.clearCookie('token', COOKIE_BASE);
+}
 
 const itemsPath = path.join(__dirname, 'data', 'items.json');
 let itemsDB = [];
@@ -95,16 +224,35 @@ async function loadItems() {
   }
 }
 
-function auth(req, res, next) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'unauthorized' });
+async function auth(req, res, next) {
   try {
-    const payload = jwt.verify(token, SECRET);
-    req.username = payload.username;
-    next();
+    const cookies = parseCookies(req);
+    const token = cookies.token;
+    if (!token) return res.status(401).json({ error: 'unauthorized' });
+    let payload;
+    try {
+      payload = jwt.verify(token, SECRET);
+    } catch (err) {
+      clearAuthCookie(res);
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const { sub, jti, username } = payload;
+    if (!sub || !jti || !username) {
+      clearAuthCookie(res);
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const session = await db.getSession(jti);
+    if (!session) {
+      clearAuthCookie(res);
+      return res.status(401).json({ error: 'session-gone' });
+    }
+    req.user = { id: sub, sessionId: jti, username };
+    req.username = username;
+    db.touchSession(jti).catch(err => console.error('touchSession failed', err));
+    return next();
   } catch (err) {
-    return res.status(401).json({ error: 'unauthorized' });
+    console.error('auth middleware failed', err);
+    return res.status(500).json({ error: 'internal error' });
   }
 }
 
@@ -259,7 +407,7 @@ function reviveMonsters() {
   if (changed) saveMap();
 }
 
-async function handleDeath(c, logs) {
+async function handleDeath(c, logs, markDirty) {
   const deathPos = { ...c.position };
   if (c.inventory && c.inventory.length > 0 && Math.random() < 0.5) {
     const idx = Math.floor(Math.random() * c.inventory.length);
@@ -281,10 +429,7 @@ async function handleDeath(c, logs) {
   c.status = '鼠了';
   logs.push(`${c.name}死亡並在(${c.position.x},${c.position.y},${c.position.z})復活`);
   await pickupItems(c);
-}
-
-function findCharacterByName(name) {
-  return users.find(u => u.character && u.character.name === name)?.character;
+  if (typeof markDirty === 'function') markDirty(c.accountId);
 }
 
 function findMonsterByName(name) {
@@ -316,99 +461,194 @@ app.post('/api/register', async (req, res) => {
     return res.status(400).json({ error: 'invalid captcha' });
   }
   captchas.delete(captchaId);
-  if (users.find(u => u.username === username)) {
-    return res.status(400).json({ error: 'user exists' });
+  try {
+    const existing = await db.findAccountByUsername(username);
+    if (existing) {
+      return res.status(400).json({ error: 'username-taken' });
+    }
+    const passwordHash = await bcrypt.hash(password, 10);
+    await db.createAccount(username, passwordHash);
+    res.json({ ok: true });
+  } catch (err) {
+    if (err && err.code === '23505') {
+      return res.status(400).json({ error: 'username-taken' });
+    }
+    console.error('account creation failed', err);
+    res.status(500).json({ error: 'internal error' });
   }
-  const passwordHash = await bcrypt.hash(password, 10);
-  users.push({ username, passwordHash });
-  await saveUsers();
-  res.json({ success: true });
 });
 
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
-  const user = users.find(u => u.username === username);
-  if (!user) return res.status(401).json({ error: 'invalid credentials' });
-  const ok = await bcrypt.compare(password, user.passwordHash);
-  if (!ok) return res.status(401).json({ error: 'invalid credentials' });
-  const token = jwt.sign({ username }, SECRET, { expiresIn: '1h' });
-  res.json({ token });
+  try {
+    const account = await db.findAccountByUsername(username);
+    if (!account) return res.status(401).json({ error: 'invalid credentials' });
+    const ok = await bcrypt.compare(password, account.passwordHash);
+    if (!ok) return res.status(401).json({ error: 'invalid credentials' });
+    const userAgent = req.get('user-agent') || null;
+    const ipHeader = req.headers['x-forwarded-for'];
+    const ip = Array.isArray(ipHeader)
+      ? ipHeader[0]
+      : typeof ipHeader === 'string'
+      ? ipHeader.split(',')[0].trim()
+      : req.ip;
+    try {
+      const { sessionId } = await db.createSession(account.id, { userAgent, ip });
+      const token = jwt.sign({ sub: account.id, jti: sessionId, username: account.username }, SECRET, {
+        expiresIn: '7d'
+      });
+      res.cookie('token', token, COOKIE_WITH_MAX_AGE);
+      res.json({ ok: true });
+    } catch (err) {
+      if (err && err.code === 'ALREADY_LOGGED_IN') {
+        return res.status(409).json({ error: 'already-logged-in' });
+      }
+      console.error('createSession failed', err);
+      return res.status(500).json({ error: 'internal error' });
+    }
+  } catch (err) {
+    console.error('login failed', err);
+    res.status(500).json({ error: 'internal error' });
+  }
+});
+
+app.post('/api/logout', auth, async (req, res) => {
+  try {
+    await db.deleteSession(req.user.sessionId);
+  } catch (err) {
+    console.error('deleteSession failed', err);
+  }
+  clearAuthCookie(res);
+  res.json({ ok: true });
+});
+
+app.get('/api/db-ping', async (req, res) => {
+  try {
+    if (!db._pool) {
+      throw new Error('database not configured');
+    }
+    const r = await db._pool.query('select 1 as ok');
+    res.json({ ok: r.rows[0].ok === 1 });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 app.get('/api/character', auth, async (req, res) => {
-  const user = users.find(u => u.username === req.username);
-  if (!user || !user.character) {
-    return res.status(404).json({ error: 'not found' });
+  try {
+    const result = await db.withPlayerTx(req.user.id, async client => {
+      const row = await db.getPlayer(req.user.id, client);
+      if (!row) return null;
+      const character = hydrateCharacter(row);
+      updateStats(character);
+      regen(character);
+      await db.upsertPlayer(serializeCharacter(character), client);
+      return responseCharacter(character);
+    });
+    if (!result) {
+      return res.status(404).json({ error: 'not found' });
+    }
+    res.json({
+      name: result.name,
+      dayAge: result.dayAge,
+      level: result.level,
+      identity: result.identity,
+      morality: fmt(result.morality),
+      action: fmt(result.action),
+      attack: fmt(result.attack),
+      hp: fmt(result.hp),
+      exp: { current: fmt(result.exp.current), max: fmt(result.exp.max) },
+      position: { x: result.position.x, y: result.position.y, z: result.position.z },
+      bio: result.bio || '看屁看'
+    });
+  } catch (err) {
+    console.error('failed to load character', err);
+    res.status(500).json({ error: 'internal error' });
   }
-  const c = user.character;
-  updateStats(c);
-  regen(c);
-  await saveUsers();
-  res.json({
-    name: c.name,
-    dayAge: c.dayAge,
-    level: c.level,
-    identity: c.identity,
-    morality: fmt(c.morality),
-    action: fmt(c.action),
-    attack: fmt(c.attack),
-    hp: fmt(c.hp),
-    exp: { current: fmt(c.exp.current), max: fmt(c.exp.max) },
-    position: { x: c.position.x, y: c.position.y, z: c.position.z },
-    bio: c.bio || '看屁看'
-  });
 });
 
 app.post('/api/character', auth, async (req, res) => {
   const { name } = req.body;
-  const user = users.find(u => u.username === req.username);
-  if (!user) return res.status(400).json({ error: 'user not found' });
   if (!nameRegex.test(name)) {
     return res.status(400).json({ error: 'invalid name' });
   }
   if (name === req.username) {
     return res.status(400).json({ error: 'name cannot equal username' });
   }
-  if (bcrypt.compareSync(name, user.passwordHash)) {
-    return res.status(400).json({ error: 'name cannot equal password' });
+  try {
+    const account = await db.findAccountByUsername(req.username);
+    if (!account) return res.status(400).json({ error: 'user not found' });
+    if (await bcrypt.compare(name, account.passwordHash)) {
+      return res.status(400).json({ error: 'name cannot equal password' });
+    }
+    const created = await db.withPlayerTx(req.user.id, async client => {
+      const existing = await db.getPlayer(req.user.id, client);
+      if (existing) {
+        return { error: 'character exists' };
+      }
+      const nameHolder = await db.findPlayerByName(name, client);
+      if (nameHolder) {
+        return { error: 'name taken' };
+      }
+      const maxHp = hpAtLevel(1);
+      const maxAction = actionAtLevel(1);
+      const character = {
+        accountId: req.user.id,
+        name,
+        status: '醒著',
+        dayAge: 0,
+        level: 1,
+        identity: '探求者',
+        morality: Math.floor(Math.random() * 41) + 30,
+        action: maxAction,
+        maxAction,
+        attack: attackAtLevel(1),
+        hp: maxHp,
+        maxHp,
+        exp: { current: 0, max: expMaxAtLevel(1) },
+        position: { x: 0, y: 0, z: 0 },
+        bio: '',
+        gold: 0,
+        inventory: [],
+        bindPoint: null,
+        dodge: 3,
+        lastHpUpdate: Date.now(),
+        lastActionUpdate: Date.now()
+      };
+      await db.upsertPlayer(serializeCharacter(character), client);
+      return responseCharacter(character);
+    });
+    if (created && created.error) {
+      return res.status(400).json({ error: created.error });
+    }
+    res.json(created);
+  } catch (err) {
+    console.error('failed to create character', err);
+    res.status(500).json({ error: 'internal error' });
   }
-  if (user.character) {
-    return res.status(400).json({ error: 'character exists' });
-  }
-  const maxHp = hpAtLevel(1);
-  const maxAction = actionAtLevel(1);
-  const character = {
-    name,
-    status: '醒著',
-    dayAge: 0,
-    level: 1,
-    identity: '探求者',
-    morality: Math.floor(Math.random() * 41) + 30,
-    action: maxAction,
-    maxAction,
-    attack: attackAtLevel(1),
-    hp: maxHp,
-    maxHp,
-    exp: { current: 0, max: expMaxAtLevel(1) },
-    position: { x: 0, y: 0, z: 0 },
-    bio: '',
-    gold: 0,
-    inventory: [],
-    bindPoint: null,
-    lastHpUpdate: Date.now(),
-    lastActionUpdate: Date.now()
-  };
-  user.character = character;
-  await saveUsers();
-  res.json(character);
 });
 
-function getLocationInfo(pos) {
+function countPlayersAtPosition(playersIterable, pos) {
+  let count = 0;
+  for (const ch of playersIterable) {
+    if (
+      ch &&
+      ch.position &&
+      ch.position.x === pos.x &&
+      ch.position.y === pos.y &&
+      ch.position.z === pos.z
+    ) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function getLocationInfo(playersIterable, pos) {
   const key = `${pos.x},${pos.y},${pos.z}`;
   const loc = worldMap[key];
-  const playersHere = users.filter(
-    u => u.character && u.character.position.x === pos.x && u.character.position.y === pos.y && u.character.position.z === pos.z
-  ).length;
+  const playersHere = countPlayersAtPosition(playersIterable, pos);
   if (loc) {
     const npcs = Array.isArray(loc.npcs) ? loc.npcs.length : 0;
     const monsters = Array.isArray(loc.monsters) ? loc.monsters.length : 0;
@@ -444,53 +684,133 @@ function formatCharacterInfo(ch) {
   return `名稱：${ch.name}\n狀態：${ch.status}\n日齡：${fmt(ch.dayAge)}\n等級：${fmt(ch.level)}\n身份：${ch.identity}\n道德：${fmt(ch.morality)}\n行動值：${fmt(ch.action)}\n攻擊力：${fmt(ch.attack)}\n血量：${fmt(ch.hp)}\n經驗值：${fmt(ch.exp.current)}/${fmt(ch.exp.max)}\n位置：(${ch.position.x},${ch.position.y},${ch.position.z})\n簡介：${ch.bio || ''}`;
 }
 
-app.post('/api/command', auth, async (req, res) => {
-  const { command } = req.body;
-  const user = users.find(u => u.username === req.username);
-  if (!user || !user.character) {
-    return res.status(400).json({ error: 'character not found' });
+function findCharacterByNameIn(playersIterable, name) {
+  for (const ch of playersIterable) {
+    if (ch && ch.name === name) return ch;
   }
-  reviveMonsters();
-  const c = user.character;
-  updateStats(c);
-  regen(c);
-  await pickupItems(c);
-  const cmd = command.trim();
-  if (c.status === '鼠了' && c.hp > 0) c.status = '醒著';
-  if (c.status === '眼睛閉著' && cmd !== '歐歐睏') c.status = '醒著';
-  const logs = [];
+  return null;
+}
 
-  const context = {
-    c,
-    users,
-    worldMap,
-    saveMap,
-    getLocationInfo,
-    formatLocationInfo,
-    formatCharacterInfo,
-    findCharacterByName,
-    findMonsterByName,
-    handleDeath,
-    pickupItems,
-    attackAtLevel,
-    hpAtLevel,
-    expGainForLevel,
-    fmt,
-    areaNameRegex,
-    monsterNameRegex,
-    monsterDrop
-  };
+app.post('/api/command', auth, async (req, res) => {
+  const { command } = req.body || {};
+  const trimmed = typeof command === 'string' ? command.trim() : '';
+  if (!trimmed) {
+    return res.status(400).json({ error: 'invalid command' });
+  }
 
-  const dispatch = require('./commands');
-  await dispatch(cmd, context, logs);
-  await saveUsers();
-  res.json({ logs });
+  try {
+    const participants = new Set([req.user.id]);
+    let targetPlayerId = null;
+
+    if (trimmed.startsWith('歐拉/')) {
+      const targetName = trimmed.slice(3).trim();
+      if (targetName) {
+        const target = await db.findPlayerByName(targetName);
+        if (target && target.id !== req.user.id) {
+          targetPlayerId = target.id;
+          participants.add(target.id);
+        }
+      }
+    } else if (trimmed === '歐拉') {
+      const attackerRow = await db.getPlayer(req.user.id);
+      if (!attackerRow) {
+        return res.status(400).json({ error: 'character not found' });
+      }
+      const { rows } = await db._pool.query(
+        'SELECT id FROM players WHERE x=$1 AND y=$2 AND z=$3 AND id <> $4',
+        [attackerRow.x, attackerRow.y, attackerRow.z, req.user.id]
+      );
+      for (const row of rows) {
+        participants.add(row.id);
+      }
+    }
+
+    const participantIds = Array.from(participants);
+    const outcome = await db.withPlayersTx(participantIds, async client => {
+      reviveMonsters();
+      const rows = await db.listPlayers(client);
+      const playersMap = new Map();
+      for (const row of rows) {
+        const hydrated = hydrateCharacter(row);
+        playersMap.set(row.id, hydrated);
+      }
+
+      const c = playersMap.get(req.user.id);
+      if (!c) {
+        return { status: 400, body: { error: 'character not found' } };
+      }
+
+      updateStats(c);
+      regen(c);
+      await pickupItems(c);
+
+      if (c.status === '鼠了' && c.hp > 0) c.status = '醒著';
+      if (c.status === '眼睛閉著' && trimmed !== '歐歐睏') c.status = '醒著';
+
+      const logs = [];
+      const dirtyPlayers = new Set([req.user.id]);
+      const markPlayerDirty = id => {
+        if (id) dirtyPlayers.add(id);
+      };
+
+      const usersList = Array.from(playersMap.entries()).map(([id, character]) => ({
+        username: id,
+        character
+      }));
+
+      const context = {
+        c,
+        users: usersList,
+        worldMap,
+        saveMap,
+        getLocationInfo: pos => getLocationInfo(playersMap.values(), pos),
+        formatLocationInfo,
+        formatCharacterInfo,
+        findCharacterByName: name => findCharacterByNameIn(playersMap.values(), name),
+        findMonsterByName,
+        handleDeath: async (target, ctxLogs) => handleDeath(target, ctxLogs, markPlayerDirty),
+        pickupItems,
+        attackAtLevel,
+        hpAtLevel,
+        expGainForLevel,
+        fmt,
+        areaNameRegex,
+        monsterNameRegex,
+        monsterDrop,
+        dbClient: client,
+        markPlayerDirty
+      };
+
+      await dispatchCommands(trimmed, context, logs);
+
+      for (const id of dirtyPlayers) {
+        const player = playersMap.get(id);
+        if (player) {
+          await db.upsertPlayer(serializeCharacter(player), client);
+        }
+      }
+
+      await db.appendEvent(req.user.id, 'command', { command: trimmed, logs }, client);
+      if (targetPlayerId && dirtyPlayers.has(targetPlayerId)) {
+        await db.appendEvent(targetPlayerId, 'command', { command: trimmed, logs }, client);
+      }
+
+      return { status: 200, body: { logs } };
+    });
+
+    const status = outcome?.status ?? 500;
+    const body = outcome?.body ?? { error: 'server error' };
+    res.status(status).json(body);
+  } catch (err) {
+    console.error('command handler failed', err);
+    res.status(500).json({ error: 'server error' });
+  }
 });
 
 async function init() {
-  await loadUsers();
   await loadMap();
   await loadItems();
+  await db.init();
   return app;
 }
 

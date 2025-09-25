@@ -1,3 +1,5 @@
+process.env.JWT_SECRET = 'test-secret';
+process.env.DATABASE_URL = 'pg-mem://stats-tests';
 const {
   hpAtLevel,
   attackAtLevel,
