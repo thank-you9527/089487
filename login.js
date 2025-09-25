@@ -19,6 +19,16 @@ loginBtn.addEventListener('click', async () => {
     localStorage.setItem('currentUser', username);
     window.location.href = 'index.html';
   } else {
+    let message = '登入失敗，請再試一次。';
+    if (res.status === 409) {
+      message = '此帳號已在其他地方登入。';
+    } else {
+      const data = await res.json().catch(() => ({}));
+      if (data && data.error === 'invalid credentials') {
+        message = '帳號或密碼錯誤。';
+      }
+    }
+    errorMsg.textContent = message;
     errorMsg.classList.remove('hidden');
   }
 });

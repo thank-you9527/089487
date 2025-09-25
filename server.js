@@ -4,6 +4,7 @@ const path = require('path');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
+const db = require('./db');
 
 const app = express();
 app.use(cors());
@@ -97,6 +98,28 @@ if (!SECRET) {
 
 const captchas = new Map();
 
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const COOKIE_BASE = { httpOnly: true, secure: true, sameSite: 'lax' };
+const COOKIE_WITH_MAX_AGE = { ...COOKIE_BASE, maxAge: SESSION_TTL_MS };
+
+function parseCookies(req) {
+  const header = req.headers.cookie;
+  if (!header) return {};
+  return header.split(';').reduce((acc, part) => {
+    const [rawKey, ...rest] = part.split('=');
+    if (!rawKey) return acc;
+    const key = rawKey.trim();
+    const value = rest.join('=').trim();
+    if (!key) return acc;
+    acc[key] = decodeURIComponent(value || '');
+    return acc;
+  }, {});
+}
+
+function clearAuthCookie(res) {
+  res.clearCookie('token', COOKIE_BASE);
+}
+
 const itemsPath = path.join(__dirname, 'data', 'items.json');
 let itemsDB = [];
 async function loadItems() {
@@ -113,17 +136,35 @@ async function loadItems() {
   }
 }
 
-function auth(req, res, next) {
-  const cookie = req.headers.cookie || '';
-  const match = cookie.match(/token=([^;]+)/);
-  const token = match && match[1];
-  if (!token) return res.status(401).json({ error: 'unauthorized' });
+async function auth(req, res, next) {
   try {
-    const payload = jwt.verify(token, SECRET);
-    req.username = payload.username;
-    next();
+    const cookies = parseCookies(req);
+    const token = cookies.token;
+    if (!token) return res.status(401).json({ error: 'unauthorized' });
+    let payload;
+    try {
+      payload = jwt.verify(token, SECRET);
+    } catch (err) {
+      clearAuthCookie(res);
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const { sub, jti } = payload;
+    if (!sub || !jti) {
+      clearAuthCookie(res);
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    const session = await db.getSession(jti);
+    if (!session) {
+      clearAuthCookie(res);
+      return res.status(401).json({ error: 'session-gone' });
+    }
+    req.user = { id: sub, sessionId: jti };
+    req.username = sub;
+    db.touchSession(jti).catch(err => console.error('touchSession failed', err));
+    return next();
   } catch (err) {
-    return res.status(401).json({ error: 'unauthorized' });
+    console.error('auth middleware failed', err);
+    return res.status(500).json({ error: 'internal error' });
   }
 }
 
@@ -350,27 +391,43 @@ app.post('/api/login', async (req, res) => {
   if (!user) return res.status(401).json({ error: 'invalid credentials' });
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) return res.status(401).json({ error: 'invalid credentials' });
-  const token = jwt.sign({ username }, SECRET, { expiresIn: '1h' });
-  res.cookie('token', token, {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'strict'
-  });
-  res.json({ ok: true });
+  const userAgent = req.get('user-agent') || null;
+  const ipHeader = req.headers['x-forwarded-for'];
+  const ip = Array.isArray(ipHeader)
+    ? ipHeader[0]
+    : typeof ipHeader === 'string'
+    ? ipHeader.split(',')[0].trim()
+    : req.ip;
+  try {
+    const { sessionId } = await db.createSession(username, { userAgent, ip });
+    const token = jwt.sign({ sub: username, jti: sessionId }, SECRET, { expiresIn: '7d' });
+    res.cookie('token', token, COOKIE_WITH_MAX_AGE);
+    res.json({ ok: true });
+  } catch (err) {
+    if (err && err.code === 'ALREADY_LOGGED_IN') {
+      return res.status(409).json({ error: 'already-logged-in' });
+    }
+    console.error('createSession failed', err);
+    return res.status(500).json({ error: 'internal error' });
+  }
 });
 
-app.post('/api/logout', (req, res) => {
-  res.clearCookie('token', {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'strict'
-  });
+app.post('/api/logout', auth, async (req, res) => {
+  try {
+    await db.deleteSession(req.user.sessionId);
+  } catch (err) {
+    console.error('deleteSession failed', err);
+  }
+  clearAuthCookie(res);
   res.json({ ok: true });
 });
 
 app.get('/api/db-ping', async (req, res) => {
   try {
-    const r = await require('./db')._pool.query('select 1 as ok');
+    if (!db._pool) {
+      throw new Error('database not configured');
+    }
+    const r = await db._pool.query('select 1 as ok');
     res.json({ ok: r.rows[0].ok === 1 });
   } catch (e) {
     console.error(e);
@@ -539,6 +596,11 @@ async function init() {
   await loadUsers();
   await loadMap();
   await loadItems();
+  try {
+    await db.init();
+  } catch (err) {
+    console.warn('Skipping database init:', err.message);
+  }
   return app;
 }
 

@@ -2,6 +2,8 @@ process.env.JWT_SECRET = 'test-secret';
 const request = require('supertest');
 const path = require('path');
 const fs = require('fs').promises;
+const jwt = require('jsonwebtoken');
+const db = require('../db');
 const { app, init } = require('../server');
 
 beforeAll(async () => {
@@ -25,7 +27,11 @@ describe('API routes', () => {
     expect(reg.status).toBe(200);
     const login = await request(app).post('/api/login').send({ username, password });
     expect(login.status).toBe(200);
-    const cookie = login.headers['set-cookie'][0].split(';')[0];
+    const setCookie = login.headers['set-cookie'][0];
+    expect(setCookie).toContain('HttpOnly');
+    expect(setCookie).toContain('Secure');
+    expect(setCookie).toContain('SameSite=Lax');
+    const cookie = setCookie.split(';')[0];
     const create = await request(app)
       .post('/api/character')
       .set('Cookie', cookie)
@@ -67,4 +73,47 @@ describe('API routes', () => {
     expect(get.body.action).toBe(100);
     jest.useRealTimers();
   });
+});
+
+test('enforces single session and expires missing sessions', async () => {
+  const username = `solo${Date.now()}`;
+  const password = 'Password!1';
+  const cap = await request(app).get('/api/captcha');
+  const { id, text } = cap.body;
+  await request(app)
+    .post('/api/register')
+    .send({ username, password, captchaId: id, captcha: text });
+
+  const login1 = await request(app).post('/api/login').send({ username, password });
+  expect(login1.status).toBe(200);
+  const cookie1Header = login1.headers['set-cookie'][0];
+  const cookie1 = cookie1Header.split(';')[0];
+
+  const login2 = await request(app).post('/api/login').send({ username, password });
+  expect(login2.status).toBe(409);
+  expect(login2.body).toEqual({ error: 'already-logged-in' });
+
+  const logout = await request(app).post('/api/logout').set('Cookie', cookie1);
+  expect(logout.status).toBe(200);
+
+  const login3 = await request(app).post('/api/login').send({ username, password });
+  expect(login3.status).toBe(200);
+  const cookie2Header = login3.headers['set-cookie'][0];
+  const cookie2 = cookie2Header.split(';')[0];
+
+  await request(app)
+    .post('/api/character')
+    .set('Cookie', cookie2)
+    .send({ name: 'Hero' });
+
+  const token = cookie2.split('=')[1];
+  const payload = jwt.verify(token, process.env.JWT_SECRET);
+  await db.deleteSession(payload.jti);
+
+  const command = await request(app)
+    .post('/api/command')
+    .set('Cookie', cookie2)
+    .send({ command: '前進' });
+  expect(command.status).toBe(401);
+  expect(command.body).toEqual({ error: 'session-gone' });
 });

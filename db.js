@@ -8,11 +8,22 @@
  */
 
 const { Pool } = require('pg');
+const { randomUUID } = require('crypto');
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false } // Render/Neon-friendly
-});
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+const connectionString = process.env.DATABASE_URL;
+const useMemorySessions = !connectionString;
+
+const pool = connectionString
+  ? new Pool({
+      connectionString,
+      ssl: process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false } // Render/Neon-friendly
+    })
+  : null;
+
+const memorySessions = new Map();
+const accountSessionIndex = new Map();
 
 // -------- helpers: snake_case <-> camelCase --------
 const toCamel = row => {
@@ -51,9 +62,29 @@ const toSnake = obj => {
   return o;
 };
 
+function sessionExpiration(meta = {}) {
+  if (meta.expiresAt) return new Date(meta.expiresAt);
+  return new Date(Date.now() + SESSION_TTL_MS);
+}
+
+function buildSessionRecord(sessionId, accountId, meta = {}) {
+  const expiresAt = sessionExpiration(meta);
+  const now = new Date();
+  return {
+    session_id: sessionId,
+    account_id: accountId,
+    issued_at: now,
+    expires_at: expiresAt,
+    last_seen: now,
+    user_agent: meta.userAgent || null,
+    ip: meta.ip || null
+  };
+}
+
 // -------- migrations (optional) --------
 async function init() {
   // Lightweight init: create tables if not exists (idempotent)
+  if (!pool) return;
   const ddl = `
   CREATE TABLE IF NOT EXISTS players (
     id                 TEXT PRIMARY KEY,
@@ -110,6 +141,7 @@ async function init() {
 
 // -------- transactions --------
 async function withTx(fn) {
+  if (!pool) throw new Error('Database connection not configured');
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -126,11 +158,13 @@ async function withTx(fn) {
 
 // -------- players --------
 async function getPlayer(id, client = pool) {
+  if (!client) throw new Error('Database connection not configured');
   const { rows } = await client.query('SELECT * FROM players WHERE id = $1', [id]);
   return toCamel(rows[0] || null);
 }
 
 async function upsertPlayer(p, client = pool) {
+  if (!client) throw new Error('Database connection not configured');
   const s = toSnake(p);
   const cols = [
     'id','name','status','identity','day_age','morality','level','attack',
@@ -149,6 +183,7 @@ async function upsertPlayer(p, client = pool) {
 }
 
 async function patchPlayer(id, patch, client = pool) {
+  if (!client) throw new Error('Database connection not configured');
   const s = toSnake(patch);
   const entries = Object.entries(s);
   if (!entries.length) return getPlayer(id, client);
@@ -162,6 +197,7 @@ async function patchPlayer(id, patch, client = pool) {
 
 // -------- events --------
 async function appendEvent(playerId, kind, payload, client = pool) {
+  if (!client) throw new Error('Database connection not configured');
   const { rows } = await client.query(
     'INSERT INTO events(player_id, kind, payload) VALUES($1,$2,$3) RETURNING *',
     [playerId, kind, payload]
@@ -169,7 +205,109 @@ async function appendEvent(playerId, kind, payload, client = pool) {
   return rows[0];
 }
 
+// -------- sessions --------
+async function createSession(accountId, meta = {}) {
+  if (!accountId) throw new Error('accountId required');
+  if (useMemorySessions) {
+    if (accountSessionIndex.has(accountId)) {
+      const err = new Error('already logged in');
+      err.code = 'ALREADY_LOGGED_IN';
+      throw err;
+    }
+    const sessionId = randomUUID();
+    const record = buildSessionRecord(sessionId, accountId, meta);
+    memorySessions.set(sessionId, record);
+    accountSessionIndex.set(accountId, sessionId);
+    return { sessionId, expiresAt: record.expires_at };
+  }
+  const sessionId = randomUUID();
+  const expiresAt = sessionExpiration(meta);
+  try {
+    await pool.query(
+      'INSERT INTO sessions(session_id, account_id, expires_at, user_agent, ip) VALUES($1,$2,$3,$4,$5)',
+      [sessionId, accountId, expiresAt, meta.userAgent || null, meta.ip || null]
+    );
+    return { sessionId, expiresAt };
+  } catch (err) {
+    if (err.code === '23505') {
+      const e = new Error('already logged in');
+      e.code = 'ALREADY_LOGGED_IN';
+      throw e;
+    }
+    throw err;
+  }
+}
+
+async function replaceSession(accountId, meta = {}) {
+  if (useMemorySessions) {
+    const existingId = accountSessionIndex.get(accountId);
+    if (existingId) {
+      memorySessions.delete(existingId);
+      accountSessionIndex.delete(accountId);
+    }
+    return createSession(accountId, meta);
+  }
+  return withTx(async client => {
+    await client.query('DELETE FROM sessions WHERE account_id=$1', [accountId]);
+    const sessionId = randomUUID();
+    const expiresAt = sessionExpiration(meta);
+    await client.query(
+      'INSERT INTO sessions(session_id, account_id, expires_at, user_agent, ip) VALUES($1,$2,$3,$4,$5)',
+      [sessionId, accountId, expiresAt, meta.userAgent || null, meta.ip || null]
+    );
+    return { sessionId, expiresAt };
+  });
+}
+
+async function getSession(sessionId) {
+  if (!sessionId) return null;
+  if (useMemorySessions) {
+    const record = memorySessions.get(sessionId);
+    if (!record) return null;
+    if (record.expires_at && record.expires_at <= new Date()) {
+      memorySessions.delete(sessionId);
+      if (record.account_id) accountSessionIndex.delete(record.account_id);
+      return null;
+    }
+    return { ...record };
+  }
+  const { rows } = await pool.query('SELECT * FROM sessions WHERE session_id=$1', [sessionId]);
+  if (rows.length === 0) return null;
+  return rows[0];
+}
+
+async function deleteSession(sessionId) {
+  if (!sessionId) return;
+  if (useMemorySessions) {
+    const record = memorySessions.get(sessionId);
+    if (record) {
+      memorySessions.delete(sessionId);
+      if (record.account_id) accountSessionIndex.delete(record.account_id);
+    }
+    return;
+  }
+  await pool.query('DELETE FROM sessions WHERE session_id=$1', [sessionId]);
+}
+
+async function touchSession(sessionId) {
+  if (!sessionId) return;
+  if (useMemorySessions) {
+    const record = memorySessions.get(sessionId);
+    if (record) {
+      record.last_seen = new Date();
+      record.expires_at = new Date(Date.now() + SESSION_TTL_MS);
+      memorySessions.set(sessionId, record);
+    }
+    return;
+  }
+  await pool.query(
+    "UPDATE sessions SET last_seen=now(), expires_at=now() + interval '7 days' WHERE session_id=$1",
+    [sessionId]
+  );
+}
+
 async function getUnreadEvents(playerId, limit = 50, client = pool) {
+  if (!client) throw new Error('Database connection not configured');
   const { rows } = await client.query(
     'SELECT * FROM events WHERE player_id=$1 AND is_read=false ORDER BY id ASC LIMIT $2',
     [playerId, limit]
@@ -178,6 +316,7 @@ async function getUnreadEvents(playerId, limit = 50, client = pool) {
 }
 
 async function markEventsRead(playerId, upToId, client = pool) {
+  if (!client) throw new Error('Database connection not configured');
   await client.query(
     'UPDATE events SET is_read=true WHERE player_id=$1 AND id <= $2 AND is_read=false',
     [playerId, upToId]
@@ -189,5 +328,11 @@ module.exports = {
   init, withTx,
   getPlayer, upsertPlayer, patchPlayer,
   appendEvent, getUnreadEvents, markEventsRead,
-  _pool: pool
+  createSession,
+  replaceSession,
+  getSession,
+  deleteSession,
+  touchSession,
+  _pool: pool,
+  _memory: { memorySessions, accountSessionIndex, useMemorySessions }
 };
