@@ -1,5 +1,13 @@
 -- schema.sql (建議版)
 
+-- 帳號
+CREATE TABLE IF NOT EXISTS accounts (
+  id            TEXT PRIMARY KEY,
+  username      TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- 玩家權威狀態
 CREATE TABLE IF NOT EXISTS players (
   id                 TEXT PRIMARY KEY,
@@ -56,4 +64,5 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
 CREATE INDEX IF NOT EXISTS idx_players_pos  ON players(x,y,z);
 CREATE INDEX IF NOT EXISTS idx_events_player ON events(player_id, is_read, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
 CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id);

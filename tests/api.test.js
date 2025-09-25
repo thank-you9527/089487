@@ -7,11 +7,13 @@ const db = require('../db');
 const { app, init } = require('../server');
 
 beforeAll(async () => {
+  const dataPath = path.join(__dirname, '..', 'data', 'characters.json');
+  await fs.writeFile(dataPath, '[]');
   await init();
 });
 
 afterAll(async () => {
-  const dataPath = path.join(__dirname, '..', 'data', 'users.json');
+  const dataPath = path.join(__dirname, '..', 'data', 'characters.json');
   await fs.writeFile(dataPath, '[]');
 });
 

@@ -15,34 +15,50 @@ app.get('/', (req, res) => {
 });
 app.use(express.static(__dirname));
 
-const dataPath = path.join(__dirname, 'data', 'users.json');
-let users = [];
-async function loadUsers() {
-  try {
-    const data = await fs.readFile(dataPath, 'utf8');
-    users = JSON.parse(data);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      users = [];
-      await fs.writeFile(dataPath, JSON.stringify(users, null, 2));
-    } else {
-      console.error('Failed to read users', err);
-      users = [];
-    }
-  }
-}
+const charactersPath = path.join(__dirname, 'data', 'characters.json');
+const characters = new Map();
+
 let writeLock = Promise.resolve();
 function scheduleWrite(task) {
   const next = writeLock.then(() => task());
   writeLock = next.catch(() => {});
   return next;
 }
-async function saveUsers() {
+
+async function loadCharacters() {
+  try {
+    const data = await fs.readFile(charactersPath, 'utf8');
+    const entries = JSON.parse(data);
+    characters.clear();
+    if (Array.isArray(entries)) {
+      for (const entry of entries) {
+        if (entry && entry.username && entry.character) {
+          characters.set(entry.username, entry.character);
+        }
+      }
+    }
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      characters.clear();
+      await fs.writeFile(charactersPath, '[]');
+    } else {
+      console.error('Failed to read characters', err);
+      characters.clear();
+    }
+  }
+}
+
+function listUsers() {
+  return Array.from(characters.entries()).map(([username, character]) => ({ username, character }));
+}
+
+async function saveCharacters() {
   return scheduleWrite(async () => {
     try {
-      await fs.writeFile(dataPath, JSON.stringify(users, null, 2));
+      const payload = listUsers();
+      await fs.writeFile(charactersPath, JSON.stringify(payload, null, 2));
     } catch (err) {
-      console.error('Failed to save users', err);
+      console.error('Failed to save characters', err);
     }
   });
 }
@@ -149,8 +165,8 @@ async function auth(req, res, next) {
       clearAuthCookie(res);
       return res.status(401).json({ error: 'unauthorized' });
     }
-    const { sub, jti } = payload;
-    if (!sub || !jti) {
+    const { sub, jti, username } = payload;
+    if (!sub || !jti || !username) {
       clearAuthCookie(res);
       return res.status(401).json({ error: 'unauthorized' });
     }
@@ -159,8 +175,8 @@ async function auth(req, res, next) {
       clearAuthCookie(res);
       return res.status(401).json({ error: 'session-gone' });
     }
-    req.user = { id: sub, sessionId: jti };
-    req.username = sub;
+    req.user = { id: sub, sessionId: jti, username };
+    req.username = username;
     db.touchSession(jti).catch(err => console.error('touchSession failed', err));
     return next();
   } catch (err) {
@@ -345,7 +361,12 @@ async function handleDeath(c, logs) {
 }
 
 function findCharacterByName(name) {
-  return users.find(u => u.character && u.character.name === name)?.character;
+  for (const character of characters.values()) {
+    if (character && character.name === name) {
+      return character;
+    }
+  }
+  return undefined;
 }
 
 function findMonsterByName(name) {
@@ -377,39 +398,54 @@ app.post('/api/register', async (req, res) => {
     return res.status(400).json({ error: 'invalid captcha' });
   }
   captchas.delete(captchaId);
-  if (users.find(u => u.username === username)) {
-    return res.status(400).json({ error: 'user exists' });
+  try {
+    const existing = await db.findAccountByUsername(username);
+    if (existing) {
+      return res.status(400).json({ error: 'username-taken' });
+    }
+    const passwordHash = await bcrypt.hash(password, 10);
+    await db.createAccount(username, passwordHash);
+    res.json({ ok: true });
+  } catch (err) {
+    if (err && err.code === '23505') {
+      return res.status(400).json({ error: 'username-taken' });
+    }
+    console.error('account creation failed', err);
+    res.status(500).json({ error: 'internal error' });
   }
-  const passwordHash = await bcrypt.hash(password, 10);
-  users.push({ username, passwordHash });
-  await saveUsers();
-  res.json({ success: true });
 });
 
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
-  const user = users.find(u => u.username === username);
-  if (!user) return res.status(401).json({ error: 'invalid credentials' });
-  const ok = await bcrypt.compare(password, user.passwordHash);
-  if (!ok) return res.status(401).json({ error: 'invalid credentials' });
-  const userAgent = req.get('user-agent') || null;
-  const ipHeader = req.headers['x-forwarded-for'];
-  const ip = Array.isArray(ipHeader)
-    ? ipHeader[0]
-    : typeof ipHeader === 'string'
-    ? ipHeader.split(',')[0].trim()
-    : req.ip;
   try {
-    const { sessionId } = await db.createSession(username, { userAgent, ip });
-    const token = jwt.sign({ sub: username, jti: sessionId }, SECRET, { expiresIn: '7d' });
-    res.cookie('token', token, COOKIE_WITH_MAX_AGE);
-    res.json({ ok: true });
-  } catch (err) {
-    if (err && err.code === 'ALREADY_LOGGED_IN') {
-      return res.status(409).json({ error: 'already-logged-in' });
+    const account = await db.findAccountByUsername(username);
+    if (!account) return res.status(401).json({ error: 'invalid credentials' });
+    const ok = await bcrypt.compare(password, account.passwordHash);
+    if (!ok) return res.status(401).json({ error: 'invalid credentials' });
+    const userAgent = req.get('user-agent') || null;
+    const ipHeader = req.headers['x-forwarded-for'];
+    const ip = Array.isArray(ipHeader)
+      ? ipHeader[0]
+      : typeof ipHeader === 'string'
+      ? ipHeader.split(',')[0].trim()
+      : req.ip;
+    try {
+      const { sessionId } = await db.createSession(account.id, { userAgent, ip });
+      const token = jwt.sign({ sub: account.id, jti: sessionId, username: account.username }, SECRET, {
+        expiresIn: '7d'
+      });
+      res.cookie('token', token, COOKIE_WITH_MAX_AGE);
+      res.json({ ok: true });
+    } catch (err) {
+      if (err && err.code === 'ALREADY_LOGGED_IN') {
+        return res.status(409).json({ error: 'already-logged-in' });
+      }
+      console.error('createSession failed', err);
+      return res.status(500).json({ error: 'internal error' });
     }
-    console.error('createSession failed', err);
-    return res.status(500).json({ error: 'internal error' });
+  } catch (err) {
+    console.error('login failed', err);
+    res.status(500).json({ error: 'internal error' });
   }
 });
 
@@ -437,14 +473,14 @@ app.get('/api/db-ping', async (req, res) => {
 });
 
 app.get('/api/character', auth, async (req, res) => {
-  const user = users.find(u => u.username === req.username);
-  if (!user || !user.character) {
+  const c = characters.get(req.username);
+  if (!c) {
     return res.status(404).json({ error: 'not found' });
   }
-  const c = user.character;
   updateStats(c);
   regen(c);
-  await saveUsers();
+  characters.set(req.username, c);
+  await saveCharacters();
   res.json({
     name: c.name,
     dayAge: c.dayAge,
@@ -462,8 +498,12 @@ app.get('/api/character', auth, async (req, res) => {
 
 app.post('/api/character', auth, async (req, res) => {
   const { name } = req.body;
-  const user = users.find(u => u.username === req.username);
-  if (!user) return res.status(400).json({ error: 'user not found' });
+  const existingCharacter = characters.get(req.username);
+  if (existingCharacter) {
+    return res.status(400).json({ error: 'character exists' });
+  }
+  const account = await db.findAccountByUsername(req.username);
+  if (!account) return res.status(400).json({ error: 'user not found' });
   if (!nameRegex.test(name)) {
     return res.status(400).json({ error: 'invalid name' });
   }
@@ -471,15 +511,12 @@ app.post('/api/character', auth, async (req, res) => {
     return res.status(400).json({ error: 'name cannot equal username' });
   }
   try {
-    if (await bcrypt.compare(name, user.passwordHash)) {
+    if (await bcrypt.compare(name, account.passwordHash)) {
       return res.status(400).json({ error: 'name cannot equal password' });
     }
   } catch (err) {
     console.error('password comparison failed', err);
     return res.status(500).json({ error: 'internal error' });
-  }
-  if (user.character) {
-    return res.status(400).json({ error: 'character exists' });
   }
   const maxHp = hpAtLevel(1);
   const maxAction = actionAtLevel(1);
@@ -504,17 +541,26 @@ app.post('/api/character', auth, async (req, res) => {
     lastHpUpdate: Date.now(),
     lastActionUpdate: Date.now()
   };
-  user.character = character;
-  await saveUsers();
+  characters.set(req.username, character);
+  await saveCharacters();
   res.json(character);
 });
 
 function getLocationInfo(pos) {
   const key = `${pos.x},${pos.y},${pos.z}`;
   const loc = worldMap[key];
-  const playersHere = users.filter(
-    u => u.character && u.character.position.x === pos.x && u.character.position.y === pos.y && u.character.position.z === pos.z
-  ).length;
+  let playersHere = 0;
+  for (const ch of characters.values()) {
+    if (
+      ch &&
+      ch.position &&
+      ch.position.x === pos.x &&
+      ch.position.y === pos.y &&
+      ch.position.z === pos.z
+    ) {
+      playersHere += 1;
+    }
+  }
   if (loc) {
     const npcs = Array.isArray(loc.npcs) ? loc.npcs.length : 0;
     const monsters = Array.isArray(loc.monsters) ? loc.monsters.length : 0;
@@ -552,15 +598,14 @@ function formatCharacterInfo(ch) {
 
 app.post('/api/command', auth, async (req, res) => {
   const { command } = req.body || {};
-  const user = users.find(u => u.username === req.username);
-  if (!user || !user.character) {
+  const c = characters.get(req.username);
+  if (!c) {
     return res.status(400).json({ error: 'character not found' });
   }
   const trimmed = typeof command === 'string' ? command.trim() : '';
   try {
-    const result = await db.withPlayerTx(req.username, async client => {
+    const result = await db.withPlayerTx(req.user.id, async client => {
       reviveMonsters();
-      const c = user.character;
       updateStats(c);
       regen(c);
       await pickupItems(c);
@@ -569,9 +614,10 @@ app.post('/api/command', auth, async (req, res) => {
       if (c.status === '眼睛閉著' && cmd !== '歐歐睏') c.status = '醒著';
       const logs = [];
 
+      const usersList = listUsers();
       const context = {
         c,
-        users,
+        users: usersList,
         worldMap,
         saveMap,
         getLocationInfo,
@@ -592,7 +638,8 @@ app.post('/api/command', auth, async (req, res) => {
       };
 
       await dispatchCommands(cmd, context, logs);
-      await saveUsers();
+      characters.set(req.username, c);
+      await saveCharacters();
       if (client) {
         try {
           await db.appendEvent(req.username, 'command', { command: cmd, logs }, client);
@@ -611,7 +658,7 @@ app.post('/api/command', auth, async (req, res) => {
 });
 
 async function init() {
-  await loadUsers();
+  await loadCharacters();
   await loadMap();
   await loadItems();
   try {

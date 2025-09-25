@@ -27,6 +27,9 @@ const fallbackPlayerQueues = new Map();
 const memorySessions = new Map();
 const accountSessionIndex = new Map();
 
+const memoryAccountsByUsername = new Map();
+const memoryAccountsById = new Map();
+
 // -------- helpers: snake_case <-> camelCase --------
 const toCamel = row => {
   if (!row) return row;
@@ -88,6 +91,12 @@ async function init() {
   // Lightweight init: create tables if not exists (idempotent)
   if (!pool) return;
   const ddl = `
+  CREATE TABLE IF NOT EXISTS accounts (
+    id            TEXT PRIMARY KEY,
+    username      TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
   CREATE TABLE IF NOT EXISTS players (
     id                 TEXT PRIMARY KEY,
     name               TEXT NOT NULL,
@@ -136,6 +145,7 @@ async function init() {
   );
   CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
   CREATE INDEX IF NOT EXISTS idx_events_player ON events(player_id, is_read, id DESC);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
   CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id);
   `;
   await pool.query(ddl);
@@ -212,6 +222,80 @@ async function withPlayerTx(playerId, fn) {
     }
     client.release();
   }
+}
+
+// -------- accounts --------
+function normalizeAccount(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    username: row.username,
+    passwordHash: row.password_hash,
+    createdAt: row.created_at
+  };
+}
+
+async function createAccount(username, passwordHash) {
+  if (!username || !passwordHash) {
+    throw new Error('username and passwordHash are required');
+  }
+  const id = randomUUID();
+  if (!pool) {
+    if (memoryAccountsByUsername.has(username)) {
+      const err = new Error('duplicate account');
+      err.code = '23505';
+      throw err;
+    }
+    const record = {
+      id,
+      username,
+      password_hash: passwordHash,
+      created_at: new Date()
+    };
+    memoryAccountsByUsername.set(username, record);
+    memoryAccountsById.set(id, record);
+    return normalizeAccount(record);
+  }
+  try {
+    const { rows } = await pool.query(
+      'INSERT INTO accounts(id, username, password_hash) VALUES($1,$2,$3) RETURNING id, username, password_hash, created_at',
+      [id, username, passwordHash]
+    );
+    return normalizeAccount(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') {
+      const dup = new Error('duplicate account');
+      dup.code = '23505';
+      throw dup;
+    }
+    throw err;
+  }
+}
+
+async function findAccountByUsername(username) {
+  if (!username) return null;
+  if (!pool) {
+    return normalizeAccount(memoryAccountsByUsername.get(username));
+  }
+  const { rows } = await pool.query(
+    'SELECT id, username, password_hash, created_at FROM accounts WHERE username=$1',
+    [username]
+  );
+  if (rows.length === 0) return null;
+  return normalizeAccount(rows[0]);
+}
+
+async function deleteAccount(id) {
+  if (!id) return;
+  if (!pool) {
+    const existing = memoryAccountsById.get(id);
+    if (existing) {
+      memoryAccountsById.delete(id);
+      memoryAccountsByUsername.delete(existing.username);
+    }
+    return;
+  }
+  await pool.query('DELETE FROM accounts WHERE id=$1', [id]);
 }
 
 // -------- players --------
@@ -384,6 +468,9 @@ async function markEventsRead(playerId, upToId, client = pool) {
 
 module.exports = {
   init, withTx, withPlayerTx,
+  createAccount,
+  findAccountByUsername,
+  deleteAccount,
   getPlayer, upsertPlayer, patchPlayer,
   appendEvent, getUnreadEvents, markEventsRead,
   createSession,
@@ -392,5 +479,11 @@ module.exports = {
   deleteSession,
   touchSession,
   _pool: pool,
-  _memory: { memorySessions, accountSessionIndex, useMemorySessions }
+  _memory: {
+    memorySessions,
+    accountSessionIndex,
+    useMemorySessions,
+    memoryAccountsByUsername,
+    memoryAccountsById
+  }
 };
