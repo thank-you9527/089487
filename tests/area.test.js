@@ -30,6 +30,14 @@ describe('area command', () => {
       fmt: v => v,
       saveMap: jest.fn(async () => {})
     };
+    ctx.listPlayersByName = () => [];
+    ctx.isMonsterNameTaken = () => false;
+    ctx.listPlayersByName = () => [];
+    ctx.isMonsterNameTaken = name =>
+      Object.values(ctx.worldMap).some(loc =>
+        Array.isArray(loc?.monsters) &&
+        loc.monsters.some(mon => mon.name && mon.name.toLowerCase() === name.toLowerCase())
+      );
 
     const originalRandom = Math.random;
     Math.random = () => 0;
@@ -73,6 +81,8 @@ describe('area command', () => {
       expGainForLevel: lvl => lvl * 3,
       saveMap: jest.fn(async () => {})
     };
+    ctx.listPlayersByName = () => [];
+    ctx.isMonsterNameTaken = () => false;
     ctx.getLocationInfo = jest.fn(() => ctx.worldMap[key] || defaultInfo);
 
     const randomValues = [0, 0, 1, 0.5];
@@ -132,6 +142,8 @@ describe('area command', () => {
       expGainForLevel: lvl => lvl + 3,
       saveMap: jest.fn(async () => {})
     };
+    ctx.listPlayersByName = () => [];
+    ctx.isMonsterNameTaken = () => false;
     ctx.getLocationInfo = jest.fn(() => ctx.worldMap[key] || defaultInfo);
 
     const randomValues = [0, 0.3, 1, 0.25];

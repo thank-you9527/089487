@@ -192,6 +192,36 @@ const mapPath = path.join(__dirname, 'data', 'map.json');
 let worldMap = {};
 let mapWriteLock = Promise.resolve();
 
+const normalizeName = value => (typeof value === 'string' ? value.trim().toLowerCase() : '');
+
+function forEachMonster(callback) {
+  if (typeof callback !== 'function') return;
+  for (const key in worldMap) {
+    const loc = worldMap[key];
+    if (!loc || !Array.isArray(loc.monsters)) continue;
+    for (const monster of loc.monsters) {
+      if (!monster) continue;
+      callback(monster, key, loc);
+    }
+  }
+}
+
+function findMonstersByNormalizedName(name) {
+  const target = normalizeName(name);
+  if (!target) return [];
+  const matches = [];
+  forEachMonster((monster, location, loc) => {
+    if (normalizeName(monster.name) === target) {
+      matches.push({ monster, location, loc });
+    }
+  });
+  return matches;
+}
+
+function isMonsterNameTaken(name) {
+  return findMonstersByNormalizedName(name).length > 0;
+}
+
 function scheduleMapWrite(task) {
   const next = mapWriteLock.then(() => task());
   mapWriteLock = next.catch(() => {});
@@ -597,14 +627,10 @@ async function handleDeath(c, logs, markDirty) {
 }
 
 function findMonsterByName(name) {
-  for (const key in worldMap) {
-    const loc = worldMap[key];
-    if (loc && Array.isArray(loc.monsters)) {
-      const m = loc.monsters.find(mon => mon.name === name);
-      if (m) return { monster: m, location: key };
-    }
-  }
-  return null;
+  const matches = findMonstersByNormalizedName(name);
+  if (matches.length === 0) return null;
+  const { monster, location } = matches[0];
+  return { monster, location };
 }
 
 app.get('/api/captcha', (req, res) => {
@@ -798,6 +824,9 @@ app.post('/api/character', auth, RATE_LIMITER, async (req, res) => {
   if (name === req.username) {
     return res.status(400).json({ error: 'name cannot equal username' });
   }
+  if (isMonsterNameTaken(name)) {
+    return res.status(400).json({ error: 'name taken' });
+  }
   try {
     const account = await db.findAccountByUsername(req.username);
     if (!account) return res.status(400).json({ error: 'user not found' });
@@ -809,8 +838,8 @@ app.post('/api/character', auth, RATE_LIMITER, async (req, res) => {
       if (existing) {
         return { error: 'character exists' };
       }
-      const nameHolder = await db.findPlayerByName(name, client);
-      if (nameHolder) {
+      const nameMatches = await db.findPlayersByNameInsensitive(name, client);
+      if (nameMatches.length > 0) {
         return { error: 'name taken' };
       }
       const maxHp = hpAtLevel(1);
@@ -906,11 +935,17 @@ function formatCharacterInfo(ch) {
   return `名稱：${ch.name}\n狀態：${ch.status}\n日齡：${fmt(ch.dayAge)}\n等級：${fmt(ch.level)}\n身份：${ch.identity}\n道德：${fmt(ch.morality)}\n行動值：${fmt(ch.action)}\n攻擊力：${fmt(ch.attack)}\n血量：${fmt(ch.hp)}\n經驗值：${fmt(ch.exp.current)}/${fmt(ch.exp.max)}\n位置：(${ch.position.x},${ch.position.y},${ch.position.z})\n簡介：${ch.bio || ''}`;
 }
 
-function findCharacterByNameIn(playersIterable, name) {
+function findCharactersByNameIn(playersIterable, name) {
+  const matches = [];
+  const target = normalizeName(name);
+  if (!target) return matches;
   for (const ch of playersIterable) {
-    if (ch && ch.name === name) return ch;
+    if (!ch || !ch.name) continue;
+    if (normalizeName(ch.name) === target) {
+      matches.push(ch);
+    }
   }
-  return null;
+  return matches;
 }
 
 app.post('/api/command', auth, RATE_LIMITER, async (req, res) => {
@@ -927,8 +962,9 @@ app.post('/api/command', auth, RATE_LIMITER, async (req, res) => {
     if (trimmed.startsWith('歐拉/')) {
       const targetName = trimmed.slice(3).trim();
       if (targetName) {
-        const target = await db.findPlayerByName(targetName);
-        if (target && target.id !== req.user.id) {
+        const matches = await db.findPlayersByNameInsensitive(targetName);
+        const target = matches.find(player => player.id !== req.user.id);
+        if (target) {
           targetPlayerId = target.id;
           participants.add(target.id);
         }
@@ -949,13 +985,18 @@ app.post('/api/command', auth, RATE_LIMITER, async (req, res) => {
 
     const participantIds = Array.from(participants);
     const eventsToPublish = [];
+    const queuedEvents = [];
     const outcome = await db.withPlayersTx(participantIds, async client => {
       reviveMonsters();
       const rows = await db.listPlayers(client);
       const playersMap = new Map();
+      const playersByName = new Map();
       for (const row of rows) {
         const hydrated = hydrateCharacter(row);
         playersMap.set(row.id, hydrated);
+        const keyName = normalizeName(hydrated.name);
+        if (!playersByName.has(keyName)) playersByName.set(keyName, []);
+        playersByName.get(keyName).push(hydrated);
       }
 
       const c = playersMap.get(req.user.id);
@@ -981,6 +1022,8 @@ app.post('/api/command', auth, RATE_LIMITER, async (req, res) => {
         character
       }));
 
+      const currentLocationKey = `${c.position.x},${c.position.y},${c.position.z}`;
+
       const context = {
         c,
         users: usersList,
@@ -989,8 +1032,11 @@ app.post('/api/command', auth, RATE_LIMITER, async (req, res) => {
         getLocationInfo: pos => getLocationInfo(playersMap.values(), pos),
         formatLocationInfo,
         formatCharacterInfo,
-        findCharacterByName: name => findCharacterByNameIn(playersMap.values(), name),
+        listPlayersByName: name => playersByName.get(normalizeName(name)) || [],
+        findCharactersByName: name => findCharactersByNameIn(playersMap.values(), name),
         findMonsterByName,
+        listMonstersByName: findMonstersByNormalizedName,
+        isMonsterNameTaken,
         handleDeath: async (target, ctxLogs) => handleDeath(target, ctxLogs, markPlayerDirty),
         pickupItems,
         attackAtLevel,
@@ -1001,7 +1047,13 @@ app.post('/api/command', auth, RATE_LIMITER, async (req, res) => {
         monsterNameRegex,
         monsterDrop,
         dbClient: client,
-        markPlayerDirty
+        markPlayerDirty,
+        currentLocationKey,
+        queueEvent: entry => {
+          if (entry && entry.playerId && entry.kind) {
+            queuedEvents.push(entry);
+          }
+        }
       };
 
       await dispatchCommands(trimmed, context, logs);
@@ -1011,6 +1063,11 @@ app.post('/api/command', auth, RATE_LIMITER, async (req, res) => {
         if (player) {
           await db.upsertPlayer(serializeCharacter(player), client);
         }
+      }
+
+      for (const entry of queuedEvents) {
+        const row = await db.appendEvent(entry.playerId, entry.kind, entry.payload, client);
+        eventsToPublish.push({ playerId: entry.playerId, event: row });
       }
 
       const selfEvent = await db.appendEvent(

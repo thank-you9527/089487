@@ -16,18 +16,89 @@ module.exports = {
         if (!targetName) {
           logs.push('沒有欸你要不要再確認看看');
         } else {
-          const targetChar = ctx.findCharacterByName(targetName);
-          if (targetChar) {
-            logs.push(ctx.formatCharacterInfo(targetChar));
-          } else {
-            const foundMonster = ctx.findMonsterByName(targetName);
-            if (foundMonster) {
-              const m = foundMonster.monster;
-              const pos = foundMonster.location.split(',').map(Number);
-              logs.push(`名稱：${m.name}\n等級：${ctx.fmt(m.level)}\n攻擊力：${ctx.fmt(m.attack)}\n血量：${ctx.fmt(m.hp)}\n位置：(${pos[0]},${pos[1]},${pos[2]})`);
-            } else {
-              logs.push('沒有欸你要不要再確認看看');
+          const raw = targetName.trim();
+          const prefixMatch = raw.match(/^(玩家|怪物)[:：](.+)$/);
+          const query = prefixMatch ? prefixMatch[2].trim() : raw;
+          if (!query) {
+            logs.push('沒有欸你要不要再確認看看');
+            return;
+          }
+
+          const currentKey =
+            ctx.currentLocationKey ||
+            `${ctx.c.position.x},${ctx.c.position.y},${ctx.c.position.z}`;
+          const playerMatches = ctx.listPlayersByName(query);
+          const monsterMatches = ctx.listMonstersByName(query);
+
+          const showPlayer = player => logs.push(ctx.formatCharacterInfo(player));
+          const showMonster = ({ monster, location }) => {
+            const pos = location.split(',').map(Number);
+            logs.push(
+              `名稱：${monster.name}\n等級：${ctx.fmt(monster.level)}\n攻擊力：${ctx.fmt(monster.attack)}\n血量：${ctx.fmt(monster.hp)}\n位置：(${pos[0]},${pos[1]},${pos[2]})`
+            );
+          };
+
+          if (prefixMatch) {
+            if (prefixMatch[1] === '玩家') {
+              if (playerMatches.length === 1) {
+                showPlayer(playerMatches[0]);
+              } else if (playerMatches.length > 1) {
+                const sameTile = playerMatches.filter(
+                  p =>
+                    p.position?.x === ctx.c.position.x &&
+                    p.position?.y === ctx.c.position.y &&
+                    p.position?.z === ctx.c.position.z
+                );
+                if (sameTile.length === 1) {
+                  showPlayer(sameTile[0]);
+                } else {
+                  logs.push('還是有多位玩家同名，請再確認。');
+                }
+              } else {
+                logs.push('沒有欸你要不要再確認看看');
+              }
+            } else if (prefixMatch[1] === '怪物') {
+              if (monsterMatches.length === 1) {
+                showMonster(monsterMatches[0]);
+              } else if (monsterMatches.length > 1) {
+                const sameTile = monsterMatches.filter(match => match.location === currentKey);
+                if (sameTile.length === 1) {
+                  showMonster(sameTile[0]);
+                } else {
+                  logs.push('這個名稱的怪物有好幾隻，請到現場確認。');
+                }
+              } else {
+                logs.push('沒有欸你要不要再確認看看');
+              }
             }
+            return;
+          }
+
+          const sameTilePlayer = playerMatches.filter(
+            p =>
+              p.position?.x === ctx.c.position.x &&
+              p.position?.y === ctx.c.position.y &&
+              p.position?.z === ctx.c.position.z
+          );
+          if (sameTilePlayer.length === 1) {
+            showPlayer(sameTilePlayer[0]);
+            return;
+          }
+
+          const sameTileMonster = monsterMatches.filter(match => match.location === currentKey);
+          if (sameTileMonster.length === 1 && playerMatches.length === 0) {
+            showMonster(sameTileMonster[0]);
+            return;
+          }
+
+          const totalMatches = playerMatches.length + monsterMatches.length;
+          if (totalMatches === 1) {
+            if (playerMatches.length === 1) showPlayer(playerMatches[0]);
+            else showMonster(monsterMatches[0]);
+          } else if (totalMatches === 0) {
+            logs.push('沒有欸你要不要再確認看看');
+          } else {
+            logs.push(`有多個同名對象，請使用「看看 玩家:${query}」或「看看 怪物:${query}」指定。`);
           }
         }
       }

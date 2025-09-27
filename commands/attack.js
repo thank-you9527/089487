@@ -161,6 +161,55 @@ function runAttack({ player, target = { level: null }, rng_seed }) {
   };
 }
 
+function runFriendlyOnly({ player, rng_seed }) {
+  const rand = rnd(rng_seed);
+  const pool = rules.friendly_event.distribution;
+  const pick = choiceWeighted(rand, pool);
+  const baseLine = rules.friendly_event.messages_pool[
+    Math.floor(rand() * rules.friendly_event.messages_pool.length)
+  ];
+  const msg = [baseLine];
+  let sub = 'flavor';
+  let dHP = 0;
+  let dSP = 0;
+
+  if (pick.type === 'heal_hp_fraction_of_max') {
+    sub = 'heal_hp';
+    const amt = rint(player.hp_max * pick.fraction);
+    const newHP = clamp(player.hp + amt, 0, player.hp_max);
+    dHP = newHP - player.hp;
+    msg.push(`你恢復了 ${dHP} 點生命。`);
+  } else if (pick.type === 'heal_sp_fixed_with_rares') {
+    sub = 'heal_sp';
+    const rares = pick.rares || [];
+    let sp = pick.base_sp;
+    const hitFull = rares.find(r => r.sp === 'full' && rand() < r.p);
+    if (hitFull) {
+      sp = player.sp_max - player.sp;
+    } else {
+      const hit50 = rares.find(r => r.sp === 50 && rand() < r.p);
+      if (hit50) sp = 50;
+    }
+    sp = rint(sp);
+    const newSP = clamp(player.sp + sp, 0, player.sp_max);
+    dSP = newSP - player.sp;
+    msg.push(dSP > 0 ? `你恢復了 ${dSP} 點體力。` : '你感到平靜。');
+  }
+
+  return {
+    event: 'friendly',
+    sub_event: sub,
+    delta_hp: rint(dHP),
+    delta_sp: rint(dSP),
+    messages: msg,
+    probs: {
+      p_friendly: 1,
+      p_mistake: 0,
+      p_attack: 0
+    }
+  };
+}
+
 function matches(text) {
   if (!text) return false;
   const trimmed = text.trim();
@@ -176,5 +225,6 @@ module.exports = {
   name: 'attack',
   aliases: rules.commands.attack.aliases,
   matches,
-  runAttack
+  runAttack,
+  runFriendlyOnly
 };

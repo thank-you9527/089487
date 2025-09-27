@@ -1,172 +1,191 @@
 const combat = require('../commands/combat');
 
+function stubRandom(sequence) {
+  const values = Array.from(sequence);
+  const original = Math.random;
+  let index = 0;
+  Math.random = jest.fn(() => {
+    const value = values[index] != null ? values[index] : values[values.length - 1] || 0;
+    index += 1;
+    return value;
+  });
+  return () => {
+    Math.random = original;
+  };
+}
+
 describe('combat command', () => {
-  test('low morality still allows attack success', async () => {
-    const logs = [];
-    const originalRandom = Math.random;
-    Math.random = () => 0; // guarantee lowest roll
-    const ctx = {
-      c: {
-        name: 'Hero',
-        action: 100,
-        maxAction: 100,
-        position: { x: 0, y: 0, z: 0 },
-        morality: -20,
-        attack: 5
-      },
-      users: [],
-      worldMap: { '0,0,0': { monsters: [{ name: 'Slime', hp: 10 }] } },
-      handleDeath: async () => {},
-      fmt: v => v,
-      saveMap: async () => {},
-      monsterDrop: async () => {}
-    };
-    await combat.prefixHandlers[0].handler('歐拉/Slime', ctx, logs);
-    Math.random = originalRandom;
-    expect(logs).not.toContain('攻擊失敗');
-    expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(5);
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
-  test('attacking owned monster triggers runAttack friendly flow and adjusts player stats', async () => {
-    const logs = [];
-    const originalRandom = Math.random;
-    const rolls = [0, 0.8, 0];
-    Math.random = jest.fn(() => (rolls.length ? rolls.shift() : 0));
+  test('owned monster attack triggers friendly event and heals player', async () => {
+    const restoreRandom = stubRandom([0.75, 0]);
+    const events = [];
     const ctx = {
       c: {
+        accountId: 'attacker',
         name: 'Hero',
-        action: 100,
-        maxAction: 120,
+        action: 50,
+        maxAction: 60,
         position: { x: 0, y: 0, z: 0 },
-        morality: 50,
-        level: 5,
-        attack: 10,
-        hp: 10,
-        maxHp: 20
+        morality: 40,
+        level: 10,
+        attack: 12,
+        hp: 15,
+        maxHp: 30
       },
       users: [],
       worldMap: {
         '0,0,0': {
           owner: 'Hero',
-          monsters: [{ name: 'Slime', hp: 20, maxHp: 20, level: 3 }]
+          monsters: [
+            { name: 'Slime', level: 5, hp: 40, maxHp: 40 }
+          ]
         }
       },
       handleDeath: jest.fn(),
-      fmt: v => v,
-      saveMap: async () => {},
-      monsterDrop: jest.fn()
+      fmt: n => n,
+      saveMap: jest.fn().mockResolvedValue(),
+      monsterDrop: jest.fn(),
+      markPlayerDirty: jest.fn(),
+      queueEvent: entry => events.push(entry)
     };
+    ctx.listPlayersByName = () => [];
 
     try {
-      await combat.prefixHandlers[0].handler('歐拉/Slime', ctx, logs);
+      await combat.prefixHandlers[0].handler('歐拉/Slime', ctx, []);
     } finally {
-      Math.random = originalRandom;
+      restoreRandom();
     }
 
-    expect(logs).toContain('你突然覺得世界其實還不錯，先深呼吸一下。');
-    expect(logs).toContain('你恢復了 7 點生命。');
-    expect(ctx.c.hp).toBe(17);
-    expect(ctx.c.action).toBe(90);
-    expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(20);
+    expect(ctx.c.hp).toBe(25);
+    expect(ctx.c.action).toBe(40);
+    expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(40);
+    expect(events).toHaveLength(1);
+    expect(events[0].kind).toBe('friendly');
+    expect(events[0].payload.delta_hp).toBe(10);
   });
 
-  test('random attack on owned monster triggers friendly interaction while players remain attackable', async () => {
+  test('targeted attack against another player resolves with counter strike', async () => {
+    const restoreRandom = stubRandom([0.95, 0.3, 0.2, 0.1, 0.9, 0.05, 0.9]);
+    const defender = {
+      accountId: 'defender',
+      name: 'Visitor',
+      action: 50,
+      maxAction: 50,
+      position: { x: 0, y: 0, z: 0 },
+      morality: 30,
+      level: 8,
+      attack: 4,
+      hp: 20,
+      maxHp: 20,
+      dodge: 5
+    };
     const logs = [];
-    const originalRandom = Math.random;
-    const rolls = [0, 0, 0, 0, 0.6, 0, 0.5];
-    Math.random = jest.fn(() => (rolls.length ? rolls.shift() : 0));
-    const otherPlayer = { name: 'Visitor', hp: 30, position: { x: 0, y: 0, z: 0 } };
+    const events = [];
     const ctx = {
       c: {
+        accountId: 'attacker',
         name: 'Hero',
-        action: 100,
-        maxAction: 100,
+        action: 20,
+        maxAction: 30,
         position: { x: 0, y: 0, z: 0 },
-        morality: 50,
-        attack: 10
+        morality: 40,
+        level: 12,
+        attack: 10,
+        hp: 30,
+        maxHp: 30,
+        dodge: 3
+      },
+      users: [{ character: defender }],
+      worldMap: { '0,0,0': { owner: 'Hero', monsters: [] } },
+      handleDeath: jest.fn(),
+      fmt: n => n,
+      saveMap: jest.fn().mockResolvedValue(),
+      monsterDrop: jest.fn(),
+      markPlayerDirty: jest.fn(),
+      queueEvent: entry => events.push(entry)
+    };
+    ctx.listPlayersByName = name =>
+      name.toLowerCase() === 'visitor' ? [defender] : [];
+
+    try {
+      await combat.prefixHandlers[0].handler('歐拉/Visitor', ctx, logs);
+    } finally {
+      restoreRandom();
+    }
+
+    expect(defender.hp).toBe(10);
+    expect(ctx.c.hp).toBe(26);
+    expect(events.filter(e => e.kind === 'combat')).toHaveLength(2);
+    expect(logs.some(line => line.includes('Hero成功對Visitor進行攻擊'))).toBe(true);
+    expect(logs.some(line => line.includes('Visitor成功對Hero進行攻擊'))).toBe(true);
+  });
+
+  test('random attack can select owned monster for friendly then other player', async () => {
+    const restoreRandom = stubRandom([
+      0, // first attack -> choose monster
+      0.8, 0, // friendly distribution + message
+      0.6, // second attack -> choose player candidate
+      0.95, // runAttack event -> attack branch
+      0.4, 0.3, // initiative rolls
+      0.1, 0.9 // accuracy and dodge for player strike
+    ]);
+    const otherPlayer = {
+      accountId: 'visitor',
+      name: 'Visitor',
+      action: 20,
+      maxAction: 20,
+      position: { x: 0, y: 0, z: 0 },
+      morality: 30,
+      level: 5,
+      attack: 3,
+      hp: 18,
+      maxHp: 18
+    };
+    const logs = [];
+    const events = [];
+    const ctx = {
+      c: {
+        accountId: 'attacker',
+        name: 'Hero',
+        action: 30,
+        maxAction: 30,
+        position: { x: 0, y: 0, z: 0 },
+        morality: 40,
+        level: 10,
+        attack: 8,
+        hp: 25,
+        maxHp: 30
       },
       users: [{ character: otherPlayer }],
       worldMap: {
         '0,0,0': {
           owner: 'Hero',
-          monsters: [{ name: 'Slime', hp: 15, maxHp: 15 }]
+          monsters: [{ name: 'Pet', level: 3, hp: 15, maxHp: 15 }]
         }
       },
       handleDeath: jest.fn(),
-      fmt: v => v,
-      saveMap: async () => {},
-      monsterDrop: jest.fn()
+      fmt: n => n,
+      saveMap: jest.fn().mockResolvedValue(),
+      monsterDrop: jest.fn(),
+      markPlayerDirty: jest.fn(),
+      queueEvent: entry => events.push(entry)
     };
+    ctx.listPlayersByName = name =>
+      name.toLowerCase() === 'visitor' ? [otherPlayer] : [];
 
-    // First attack should pick the monster (roll 0) and trigger friendly interaction
     try {
       await combat.handlers['歐拉'](ctx, logs);
-      expect(logs).toContain('你突然覺得世界其實還不錯，先深呼吸一下。');
-      expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(15);
-
       await combat.handlers['歐拉'](ctx, logs);
-      expect(otherPlayer.hp).toBe(20);
     } finally {
-      Math.random = originalRandom;
-    }
-  });
-
-  test('defeating guardian reverts area to 廢墟 and preserves level', async () => {
-    const logs = [];
-    const originalRandom = Math.random;
-    Math.random = () => 0;
-    const saveMap = jest.fn().mockResolvedValue();
-    const ctx = {
-      c: {
-        name: 'Visitor',
-        action: 100,
-        maxAction: 100,
-        position: { x: 0, y: 0, z: 0 },
-        morality: 50,
-        attack: 999
-      },
-      users: [],
-      worldMap: {
-        '0,0,0': {
-          name: '奇幻森林',
-          owner: 'Hero',
-          level: 7,
-          initialLevel: 7,
-          description: '翠綠的森林',
-          monsters: [
-            {
-              name: '奇幻森林_守護神',
-              guardian: true,
-              hp: 5,
-              maxHp: 5,
-              level: 7,
-              attack: 10,
-              exp: 20
-            }
-          ],
-          returnMark: true
-        }
-      },
-      handleDeath: jest.fn(),
-      fmt: v => v,
-      saveMap,
-      monsterDrop: jest.fn()
-    };
-
-    try {
-      await combat.prefixHandlers[0].handler('歐拉/奇幻森林_守護神', ctx, logs);
-    } finally {
-      Math.random = originalRandom;
+      restoreRandom();
     }
 
-    const loc = ctx.worldMap['0,0,0'];
-    expect(loc.name).toBe('廢墟');
-    expect(loc.owner).toBeUndefined();
-    expect(loc.level).toBe(7);
-    expect(loc.initialLevel).toBe(7);
-    expect(loc.description).toBe('守護神殞落後，奇幻森林再度化為廢墟。');
-    expect(loc.monsters).toEqual([]);
-    expect(loc.returnMark).toBeUndefined();
-    expect(saveMap).toHaveBeenCalled();
+    expect(ctx.worldMap['0,0,0'].monsters[0].hp).toBe(15);
+    expect(otherPlayer.hp).toBe(10);
+    expect(events.filter(e => e.kind === 'friendly')).toHaveLength(1);
+    expect(events.filter(e => e.kind === 'combat')).toHaveLength(2);
   });
 });

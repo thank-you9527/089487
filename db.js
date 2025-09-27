@@ -294,6 +294,15 @@ async function findPlayerByName(name, client) {
   return toCamel(rows[0]);
 }
 
+async function findPlayersByNameInsensitive(name, client) {
+  if (!name) return [];
+  const { rows } = await exec(client).query(
+    'SELECT * FROM players WHERE LOWER(name)=LOWER($1)',
+    [name]
+  );
+  return rows.map(toCamel);
+}
+
 async function listPlayers(client) {
   const { rows } = await exec(client).query('SELECT * FROM players');
   return rows.map(toCamel);
@@ -435,6 +444,7 @@ module.exports = {
   deleteAccount,
   getPlayer,
   findPlayerByName,
+  findPlayersByNameInsensitive,
   listPlayers,
   upsertPlayer,
   patchPlayer,

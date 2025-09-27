@@ -33,9 +33,12 @@ module.exports = {
         ctx.c.action = Math.max(0, ctx.c.action - 1);
         ctx.c.lastActionUpdate = Date.now();
         const info = ctx.getLocationInfo(ctx.c.position);
-        const nameTaken = Object.values(ctx.worldMap).some(
-          loc => loc && loc.name === areaName && loc.name !== '廢墟'
-        );
+        const normalizedAreaName = areaName ? areaName.toLowerCase() : '';
+        const nameTaken = Object.values(ctx.worldMap).some(loc => {
+          if (!loc) return false;
+          if (!loc.name || loc.name === '廢墟') return false;
+          return loc.name.toLowerCase() === normalizedAreaName;
+        });
         if (
           !areaName ||
           !ctx.areaNameRegex.test(areaName) ||
@@ -105,11 +108,17 @@ module.exports = {
         ctx.c.lastActionUpdate = Date.now();
         const key = `${ctx.c.position.x},${ctx.c.position.y},${ctx.c.position.z}`;
         const loc = ctx.worldMap[key];
-        const nameTaken = Object.values(ctx.worldMap).some(
-          l => Array.isArray(l.monsters) && l.monsters.some(m => m.name === mName)
-        );
-        if (!mName || !loc || loc.owner !== ctx.c.name || !ctx.monsterNameRegex.test(mName) || nameTaken) {
-          logs.push(nameTaken ? '名稱已被使用' : '你要不要看看你現在在哪裡？');
+        const monsterTaken = ctx.isMonsterNameTaken(mName);
+        const playerTaken = ctx.listPlayersByName(mName).length > 0;
+        if (
+          !mName ||
+          !loc ||
+          loc.owner !== ctx.c.name ||
+          !ctx.monsterNameRegex.test(mName) ||
+          monsterTaken ||
+          playerTaken
+        ) {
+          logs.push(monsterTaken || playerTaken ? '名稱已被使用' : '你要不要看看你現在在哪裡？');
         } else {
           const areaLevel = loc.level || loc.initialLevel || 1;
           const lvl = rollMonsterLevel(areaLevel);
