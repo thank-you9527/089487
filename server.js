@@ -20,6 +20,7 @@ function assertEnvOrExit() {
 assertEnvOrExit();
 
 const db = require('./db');
+const { SESSION_TTL_MS, SESSION_IDLE_TIMEOUT_MS } = db;
 const dispatchCommands = require('./commands');
 
 function createRateLimiter({ windowMs, refillPerWindow, burst }) {
@@ -132,6 +133,13 @@ async function runEventCleanup() {
     }
     if (total > 0) {
       console.log('[events-cleanup]', { deleted: total });
+    }
+    const removedSessions = await db.cleanupStaleSessions(client);
+    if (removedSessions > 0) {
+      console.log('[sessions-cleanup]', {
+        deleted: removedSessions,
+        idleTimeoutSec: SESSION_IDLE_TIMEOUT_SEC
+      });
     }
     return total;
   } catch (err) {
@@ -380,9 +388,10 @@ if (!SECRET) {
 
 const captchas = new Map();
 
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const COOKIE_BASE = { httpOnly: true, secure: true, sameSite: 'lax' };
 const COOKIE_WITH_MAX_AGE = { ...COOKIE_BASE, maxAge: SESSION_TTL_MS };
+const JWT_EXP_SECONDS = Math.max(1, Math.floor(SESSION_TTL_MS / 1000));
+const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000));
 
 function parseCookies(req) {
   const header = req.headers.cookie;
@@ -428,12 +437,12 @@ async function auth(req, res, next) {
       payload = jwt.verify(token, SECRET);
     } catch (err) {
       clearAuthCookie(res);
-      return res.status(401).json({ error: 'unauthorized' });
+      return res.status(401).json({ error: 'bad-token' });
     }
     const { sub, jti, username } = payload;
     if (!sub || !jti || !username) {
       clearAuthCookie(res);
-      return res.status(401).json({ error: 'unauthorized' });
+      return res.status(401).json({ error: 'bad-token' });
     }
     const session = await db.getSession(jti);
     if (!session) {
@@ -442,10 +451,38 @@ async function auth(req, res, next) {
     }
     req.user = { id: sub, sessionId: jti, username };
     req.username = username;
-    db.touchSession(jti).catch(err => console.error('touchSession failed', err));
+    req.sessionRow = session;
     return next();
   } catch (err) {
     console.error('auth middleware failed', err);
+    return res.status(500).json({ error: 'internal error' });
+  }
+}
+
+async function ensureActiveSession(req, res, next) {
+  try {
+    const session = req.sessionRow;
+    if (!session) {
+      clearAuthCookie(res);
+      return res.status(401).json({ error: 'session-gone' });
+    }
+    const now = Date.now();
+    const lastSeenMs = session.last_seen ? new Date(session.last_seen).getTime() : 0;
+    if (SESSION_IDLE_TIMEOUT_MS > 0 && lastSeenMs && now - lastSeenMs > SESSION_IDLE_TIMEOUT_MS) {
+      await db.deleteSession(session.session_id);
+      clearAuthCookie(res);
+      return res.status(401).json({ error: 'session-timeout' });
+    }
+    const expiresMs = session.expires_at ? new Date(session.expires_at).getTime() : 0;
+    if (expiresMs && now > expiresMs) {
+      await db.deleteSession(session.session_id);
+      clearAuthCookie(res);
+      return res.status(401).json({ error: 'session-expired' });
+    }
+    await db.touchSession(session.session_id);
+    return next();
+  } catch (err) {
+    console.error('ensureActiveSession failed', err);
     return res.status(500).json({ error: 'internal error' });
   }
 }
@@ -685,7 +722,7 @@ app.post('/api/login', async (req, res) => {
     try {
       const { sessionId } = await db.createSession(account.id, { userAgent, ip });
       const token = jwt.sign({ sub: account.id, jti: sessionId, username: account.username }, SECRET, {
-        expiresIn: '7d'
+        expiresIn: JWT_EXP_SECONDS
       });
       res.cookie('token', token, COOKIE_WITH_MAX_AGE);
       res.json({ ok: true });
@@ -702,13 +739,27 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-app.post('/api/logout', auth, async (req, res) => {
+app.post('/api/logout', auth, ensureActiveSession, async (req, res) => {
   try {
     await db.deleteSession(req.user.sessionId);
   } catch (err) {
     console.error('deleteSession failed', err);
   }
   clearAuthCookie(res);
+  res.json({ ok: true });
+});
+
+app.post('/api/logout-beacon', auth, ensureActiveSession, async (req, res) => {
+  try {
+    await db.deleteSession(req.user.sessionId);
+  } catch (err) {
+    console.error('logout-beacon failed', err);
+  }
+  clearAuthCookie(res);
+  res.json({ ok: true });
+});
+
+app.post('/api/ping', auth, ensureActiveSession, (req, res) => {
   res.json({ ok: true });
 });
 
@@ -725,7 +776,7 @@ app.get('/api/db-ping', async (req, res) => {
   }
 });
 
-app.get('/api/events', auth, (req, res) => {
+app.get('/api/events', auth, ensureActiveSession, (req, res) => {
   res.set({
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -783,7 +834,7 @@ app.get('/api/events', auth, (req, res) => {
   })();
 });
 
-app.get('/api/character', auth, RATE_LIMITER, async (req, res) => {
+app.get('/api/character', auth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
   try {
     const result = await db.withPlayerTx(req.user.id, async client => {
       const row = await db.getPlayer(req.user.id, client);
@@ -816,7 +867,7 @@ app.get('/api/character', auth, RATE_LIMITER, async (req, res) => {
   }
 });
 
-app.post('/api/character', auth, RATE_LIMITER, async (req, res) => {
+app.post('/api/character', auth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
   const { name } = req.body;
   if (!nameRegex.test(name)) {
     return res.status(400).json({ error: 'invalid name' });
@@ -948,7 +999,7 @@ function findCharactersByNameIn(playersIterable, name) {
   return matches;
 }
 
-app.post('/api/command', auth, RATE_LIMITER, async (req, res) => {
+app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
   const { command } = req.body || {};
   const trimmed = typeof command === 'string' ? command.trim() : '';
   if (!trimmed) {

@@ -8,6 +8,8 @@ interface.
 2. Configure environment variables:
    - `export DATABASE_URL=postgres://user:pass@host:5432/dbname`
    - `export JWT_SECRET=your-secret`
+   - `export SESSION_TTL_HOURS=24` *(optional, defaults to 24)*
+   - `export SESSION_IDLE_TIMEOUT_SEC=600` *(optional, defaults to 600 seconds)*
    (Windows use `set` instead of `export`.)
 3. Start the server: `npm start`
 4. Open `http://localhost:3000/` in your browser.
@@ -23,6 +25,7 @@ them to a transactional database for production deployments.
 ### Observability & operations
 - **Real-time events** – Clients open `GET /api/events` (Server-Sent Events) to receive combat logs and system updates instantly. The stream accepts `Last-Event-ID`/`sinceId` to backfill the latest 200 events and emits keep-alives every 25 seconds to stay proxy-friendly.
 - **Rate limiting** – Authenticated API routes enforce a sliding-window bucket of 3 commands per second (burst 6) per account and IP. Responses expose `X-RateLimit-*` headers and return `429 { "error": "rate-limited" }` when exceeded.
+- **Session lifecycle** – Sessions last up to `SESSION_TTL_HOURS` (default 24) and expire after `SESSION_IDLE_TIMEOUT_SEC` (default 600) seconds of inactivity. The client sends `/api/ping` heartbeats while the page is open and posts to `/api/logout-beacon` when the tab closes so single-login enforcement releases promptly.
 - **Slow-query logging** – Database calls slower than 200 ms (500 ms for event backfills) log `[slow-sql]` with the statement snippet to aid tuning.
 - **Event retention** – An hourly background job wins an advisory lock before deleting batches of read events older than 30 days, logging the number of rows purged.
 

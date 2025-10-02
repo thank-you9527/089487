@@ -20,11 +20,18 @@ const logKey = currentUser ? `logs_${currentUser}` : 'logs';
 let logs = JSON.parse(localStorage.getItem(logKey) || '[]');
 let loadedCount = 10; // 每次顯示的筆數
 let sessionExpired = false;
+const HEARTBEAT_VISIBLE_MS = 60_000;
+const HEARTBEAT_HIDDEN_MS = 120_000;
+let heartbeatTimer = null;
+let heartbeatFailures = 0;
+let logoutBeaconSent = false;
+let pendingBeaconTimer = null;
 
-function handleSessionExpired() {
+function handleSessionExpired(message = '登入已失效，請重新登入') {
   if (sessionExpired) return;
   sessionExpired = true;
-  alert('登入已失效，請重新登入');
+  stopHeartbeat();
+  alert(message);
   sessionStorage.removeItem('returnShown');
   localStorage.removeItem('currentUser');
   window.location.href = 'login.html';
@@ -33,29 +40,163 @@ function handleSessionExpired() {
 async function handleUnauthorizedResponse(res) {
   if (res.status !== 401) return false;
   const data = await res.json().catch(() => ({}));
-  if (data && data.error === 'session-gone') {
+  const code = data?.error;
+  if (code === 'session-timeout') {
+    handleSessionExpired('已閒置登出，請重新登入');
+  } else if (code === 'session-expired') {
+    handleSessionExpired('登入已過期，請重新登入');
+  } else if (code === 'session-gone' || code === 'bad-token' || code === 'unauthorized') {
+    handleSessionExpired('登入已失效，請重新登入');
+  } else {
     handleSessionExpired();
   }
   return true;
 }
 
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearTimeout(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+async function sendHeartbeat() {
+  if (sessionExpired) return false;
+  try {
+    const res = await fetch('/api/ping', {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true
+    });
+    if (await handleUnauthorizedResponse(res)) return false;
+    if (!res.ok) throw new Error('heartbeat failed');
+    heartbeatFailures = 0;
+    return true;
+  } catch (err) {
+    heartbeatFailures += 1;
+    if (heartbeatFailures >= 3) {
+      addLog('連線異常，請檢查網路或稍後再試。');
+      stopHeartbeat();
+    }
+    return false;
+  }
+}
+
+function scheduleHeartbeat() {
+  if (sessionExpired) return;
+  stopHeartbeat();
+  const interval = document.hidden ? HEARTBEAT_HIDDEN_MS : HEARTBEAT_VISIBLE_MS;
+  heartbeatTimer = setTimeout(async () => {
+    await sendHeartbeat();
+    if (!sessionExpired && heartbeatFailures < 3) {
+      scheduleHeartbeat();
+    }
+  }, interval);
+}
+
+function startHeartbeat() {
+  heartbeatFailures = 0;
+  stopHeartbeat();
+  sendHeartbeat().finally(() => {
+    if (!sessionExpired && heartbeatFailures < 3) {
+      scheduleHeartbeat();
+    }
+  });
+}
+
+function sendLogoutBeacon() {
+  if (sessionExpired) return;
+  if (logoutBeaconSent) return;
+  logoutBeaconSent = true;
+  try {
+    if (navigator.sendBeacon) {
+      const blob = new Blob([], { type: 'application/json' });
+      navigator.sendBeacon('/api/logout-beacon', blob);
+    } else {
+      fetch('/api/logout-beacon', {
+        method: 'POST',
+        credentials: 'include',
+        keepalive: true
+      }).catch(() => {});
+    }
+  } catch (err) {
+    fetch('/api/logout-beacon', {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true
+    }).catch(() => {});
+  }
+  setTimeout(() => {
+    logoutBeaconSent = false;
+  }, 5000);
+}
+
+function scheduleLogoutBeacon() {
+  if (pendingBeaconTimer) {
+    clearTimeout(pendingBeaconTimer);
+    pendingBeaconTimer = null;
+  }
+  if (sessionExpired) return;
+  pendingBeaconTimer = setTimeout(() => {
+    pendingBeaconTimer = null;
+    sendLogoutBeacon();
+  }, 2000);
+}
+
+function setupLifecycleHandlers() {
+  document.addEventListener('visibilitychange', () => {
+    if (sessionExpired) return;
+    if (document.visibilityState === 'hidden') {
+      scheduleLogoutBeacon();
+    } else {
+      if (pendingBeaconTimer) {
+        clearTimeout(pendingBeaconTimer);
+        pendingBeaconTimer = null;
+      }
+      logoutBeaconSent = false;
+    }
+    scheduleHeartbeat();
+  });
+
+  window.addEventListener('pagehide', () => {
+    if (sessionExpired) return;
+    sendLogoutBeacon();
+  });
+
+  window.addEventListener('beforeunload', () => {
+    if (sessionExpired) return;
+    sendLogoutBeacon();
+  });
+}
+
 async function ensureCharacter() {
   const res = await fetch('/api/character', { credentials: 'include' });
-  if (await handleUnauthorizedResponse(res)) return;
+  if (await handleUnauthorizedResponse(res)) return false;
   if (res.status === 404) {
     let name = '';
     while (true) {
       name = prompt('請輸入角色名稱（最多10字）：');
-      if (!name) return;
+      if (!name) return false;
       if (/^[A-Za-z0-9\u4E00-\u9FFF.,•，。_]{1,10}$/.test(name)) break;
     }
-    await fetch('/api/character', {
+    const createRes = await fetch('/api/character', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
       credentials: 'include'
     });
+    if (await handleUnauthorizedResponse(createRes)) return false;
+    if (!createRes.ok) {
+      addLog('建立角色失敗，請稍後再試。');
+      return false;
+    }
+    return true;
   }
+  if (!res.ok) {
+    addLog('無法讀取角色資料，請稍後再試。');
+    return false;
+  }
+  return true;
 }
 
 function addLog(text) {
@@ -105,10 +246,14 @@ sendBtn.addEventListener('click', async () => {
     if (res.ok) {
       const data = await res.json();
       (data.logs || []).forEach((l) => addLog(l));
+    } else if (res.status === 429) {
+      const data = await res.json().catch(() => ({}));
+      const retry = data?.retryAfter;
+      addLog(retry ? `操作太快，請於 ${retry} 秒後再試。` : '操作太快，請稍後再試。');
     } else if (await handleUnauthorizedResponse(res)) {
       return;
     } else {
-      addLog('指令送出失敗（請確認登入或伺服器狀態）');
+      addLog('指令送出失敗，請稍後再試。');
     }
   } catch (e) {
     addLog('無法連線到伺服器');
@@ -159,6 +304,7 @@ logoutBtn.addEventListener('click', async () => {
     try {
       const res = await fetch('/api/logout', { method: 'POST', credentials: 'include' });
       if (res.ok) {
+        stopHeartbeat();
         sessionStorage.removeItem('returnShown');
         localStorage.removeItem('currentUser');
         location.href = 'login.html';
@@ -209,4 +355,9 @@ exportLogsBtn.addEventListener('click', () => {
   };
 });
 
-ensureCharacter().then(initialMessage);
+setupLifecycleHandlers();
+ensureCharacter().then((ok) => {
+  if (ok === false) return;
+  startHeartbeat();
+  initialMessage();
+});

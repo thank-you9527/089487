@@ -5,7 +5,10 @@
 const { Pool } = require('pg');
 const { randomUUID, createHash } = require('crypto');
 
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const SESSION_TTL_HOURS = Math.max(1, Number(process.env.SESSION_TTL_HOURS ?? 24));
+const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Number(process.env.SESSION_IDLE_TIMEOUT_SEC ?? 600));
+const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
+const SESSION_IDLE_TIMEOUT_MS = SESSION_IDLE_TIMEOUT_SEC * 1000;
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -428,10 +431,23 @@ async function deleteSession(sessionId) {
 
 async function touchSession(sessionId) {
   if (!sessionId) return;
+  const expiresAt = sessionExpiration();
   await pool.query(
-    "UPDATE sessions SET last_seen=now(), expires_at=now() + interval '7 days' WHERE session_id=$1",
-    [sessionId]
+    'UPDATE sessions SET last_seen=now(), expires_at=$2 WHERE session_id=$1',
+    [sessionId, expiresAt]
   );
+}
+
+async function cleanupStaleSessions(client) {
+  const runner = exec(client);
+  let sql = 'DELETE FROM sessions WHERE expires_at < now()';
+  const params = [];
+  if (SESSION_IDLE_TIMEOUT_MS > 0) {
+    sql += ' OR last_seen < $1';
+    params.push(new Date(Date.now() - SESSION_IDLE_TIMEOUT_MS * 3));
+  }
+  const { rowCount } = await runner.query(sql, params);
+  return rowCount;
 }
 
 module.exports = {
@@ -439,6 +455,10 @@ module.exports = {
   withTx,
   withPlayerTx,
   withPlayersTx,
+  SESSION_TTL_HOURS,
+  SESSION_TTL_MS,
+  SESSION_IDLE_TIMEOUT_SEC,
+  SESSION_IDLE_TIMEOUT_MS,
   createAccount,
   findAccountByUsername,
   deleteAccount,
@@ -457,5 +477,6 @@ module.exports = {
   getSession,
   deleteSession,
   touchSession,
+  cleanupStaleSessions,
   _pool: pool
 };
