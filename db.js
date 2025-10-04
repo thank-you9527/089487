@@ -231,6 +231,15 @@ async function init() {
   CREATE INDEX IF NOT EXISTS idx_items_maker ON items(maker_id);
   `;
   await pool.query(ddl);
+  const alterSessions = `
+    ALTER TABLE sessions
+      ADD COLUMN IF NOT EXISTS issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '7 days',
+      ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+      ADD COLUMN IF NOT EXISTS user_agent TEXT,
+      ADD COLUMN IF NOT EXISTS ip TEXT;
+  `;
+  await pool.query(alterSessions);
 }
 
 async function withTx(fn) {
