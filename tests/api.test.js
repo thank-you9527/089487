@@ -39,6 +39,22 @@ describe('API routes', () => {
     expect(unauthorized.status).toBe(401);
   });
 
+  test('login accepts canonicalized username casing', async () => {
+    const base = Date.now().toString(36);
+    const username = `Case${base}`;
+    const password = 'Password!1';
+    const cap = await request(app).get('/api/captcha');
+    const { id, text } = cap.body;
+    const reg = await request(app)
+      .post('/api/register')
+      .send({ username, password, captchaId: id, captcha: text });
+    expect(reg.status).toBe(200);
+    const login = await request(app)
+      .post('/api/login')
+      .send({ username: username.toLowerCase(), password });
+    expect(login.status).toBe(204);
+  });
+
   test('action regenerates over time', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2020-01-01'));
     const username = `user${Date.now()}`;

@@ -73,12 +73,15 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE TABLE IF NOT EXISTS accounts (
   id            TEXT PRIMARY KEY,
   username      TEXT UNIQUE NOT NULL,
+  username_norm TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- 索引
 CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
+CREATE INDEX IF NOT EXISTS idx_accounts_username_norm ON accounts(username_norm);
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_accounts_username_norm ON accounts(username_norm);
 CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
 CREATE INDEX IF NOT EXISTS idx_players_pos  ON players(x,y,z);
 CREATE INDEX IF NOT EXISTS idx_events_player ON events(player_id, is_read, id DESC);

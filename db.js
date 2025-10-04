@@ -4,6 +4,7 @@
 
 const { Pool } = require('pg');
 const { randomUUID, createHash } = require('crypto');
+const { canonicalize } = require('./lib/names');
 
 const DEFAULT_SESSION_TTL_HOURS = 24 * 7; // 7 days
 const SESSION_TTL_HOURS = Math.max(1, Number(process.env.SESSION_TTL_HOURS ?? DEFAULT_SESSION_TTL_HOURS));
@@ -155,6 +156,7 @@ async function init() {
   CREATE TABLE IF NOT EXISTS accounts (
     id            TEXT PRIMARY KEY,
     username      TEXT UNIQUE NOT NULL,
+    username_norm TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
   );
@@ -231,6 +233,41 @@ async function init() {
   CREATE INDEX IF NOT EXISTS idx_items_maker ON items(maker_id);
   `;
   await pool.query(ddl);
+  await pool.query(
+    `ALTER TABLE accounts
+       ADD COLUMN IF NOT EXISTS username_norm TEXT`
+  );
+  const { rows: accountRows } = await pool.query(
+    'SELECT id, username, username_norm FROM accounts'
+  );
+  const seenCanonical = new Map();
+  const duplicateCanonicals = new Set();
+  for (const row of accountRows) {
+    const norm = canonicalize(row.username) || '';
+    if (row.username_norm !== norm) {
+      await pool.query('UPDATE accounts SET username_norm=$1 WHERE id=$2', [norm, row.id]);
+    }
+    if (seenCanonical.has(norm) && seenCanonical.get(norm) !== row.id) {
+      duplicateCanonicals.add(norm);
+    } else {
+      seenCanonical.set(norm, row.id);
+    }
+  }
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_accounts_username_norm ON accounts(username_norm)');
+  if (duplicateCanonicals.size === 0) {
+    try {
+      await pool.query(
+        'CREATE UNIQUE INDEX IF NOT EXISTS uniq_accounts_username_norm ON accounts(username_norm)'
+      );
+    } catch (err) {
+      console.warn('Failed to ensure unique username_norm index', err.message);
+    }
+  } else {
+    console.warn(
+      'Duplicate canonical usernames detected (resolve manually before unique index):',
+      Array.from(duplicateCanonicals).join(', ')
+    );
+  }
   const alterSessions = `
     ALTER TABLE sessions
       ADD COLUMN IF NOT EXISTS issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -318,6 +355,7 @@ function normalizeAccount(row) {
   return {
     id: row.id,
     username: row.username,
+    usernameNorm: row.username_norm,
     passwordHash: row.password_hash,
     createdAt: row.created_at
   };
@@ -327,11 +365,17 @@ async function createAccount(username, passwordHash) {
   if (!username || !passwordHash) {
     throw new Error('username and passwordHash are required');
   }
+  const canonical = canonicalize(username);
+  if (!canonical) {
+    const err = new Error('invalid username');
+    err.code = 'INVALID_USERNAME';
+    throw err;
+  }
   const id = randomUUID();
   try {
     const { rows } = await pool.query(
-      'INSERT INTO accounts(id, username, password_hash) VALUES($1,$2,$3) RETURNING id, username, password_hash, created_at',
-      [id, username, passwordHash]
+      'INSERT INTO accounts(id, username, username_norm, password_hash) VALUES($1,$2,$3,$4) RETURNING id, username, username_norm, password_hash, created_at',
+      [id, username, canonical, passwordHash]
     );
     return normalizeAccount(rows[0]);
   } catch (err) {
@@ -346,9 +390,11 @@ async function createAccount(username, passwordHash) {
 
 async function findAccountByUsername(username) {
   if (!username) return null;
+  const canonical = canonicalize(username);
+  if (!canonical) return null;
   const { rows } = await pool.query(
-    'SELECT id, username, password_hash, created_at FROM accounts WHERE username=$1',
-    [username]
+    'SELECT id, username, username_norm, password_hash, created_at FROM accounts WHERE username_norm=$1',
+    [canonical]
   );
   if (rows.length === 0) return null;
   return normalizeAccount(rows[0]);
@@ -471,11 +517,12 @@ async function createSession(accountId, meta = {}) {
     }
     const sessionId = randomUUID();
     const ttlMs = Math.max(1, Math.floor(SESSION_TTL_MS));
+    const expiresAt = new Date(Date.now() + ttlMs);
     try {
       await runner.query(
         `INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip)
-         VALUES($1,$2,now(),now(),now() + ($3::bigint) * interval '1 millisecond',$4,$5)`,
-        [sessionId, accountId, ttlMs, meta.userAgent || null, meta.ip || null]
+         VALUES($1,$2,now(),now(),$3,$4,$5)`,
+        [sessionId, accountId, expiresAt, meta.userAgent || null, meta.ip || null]
       );
     } catch (err) {
       if (err.code === '23505') {
@@ -485,7 +532,7 @@ async function createSession(accountId, meta = {}) {
       }
       throw err;
     }
-    return { sessionId, expiresAt: new Date(Date.now() + ttlMs) };
+    return { sessionId, expiresAt };
   });
 }
 
@@ -495,12 +542,13 @@ async function replaceSession(accountId, meta = {}) {
     await runner.query('DELETE FROM sessions WHERE account_id=$1', [accountId]);
     const sessionId = randomUUID();
     const ttlMs = Math.max(1, Math.floor(SESSION_TTL_MS));
+    const expiresAt = new Date(Date.now() + ttlMs);
     await runner.query(
       `INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip)
-       VALUES($1,$2,now(),now(),now() + ($3::bigint) * interval '1 millisecond',$4,$5)`,
-      [sessionId, accountId, ttlMs, meta.userAgent || null, meta.ip || null]
+       VALUES($1,$2,now(),now(),$3,$4,$5)`,
+      [sessionId, accountId, expiresAt, meta.userAgent || null, meta.ip || null]
     );
-    return { sessionId, expiresAt: new Date(Date.now() + ttlMs) };
+    return { sessionId, expiresAt };
   });
 }
 
@@ -520,11 +568,12 @@ async function touchSession(sessionId) {
   if (!sessionId) return false;
   let extensionSeconds = Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000);
   if (extensionSeconds <= 0) extensionSeconds = 30 * 60;
+  const newExpiry = new Date(Date.now() + extensionSeconds * 1000);
   const { rowCount } = await pool.query(
     `UPDATE sessions
-     SET last_seen=now(), expires_at=now() + ($2::int) * interval '1 second'
+     SET last_seen=now(), expires_at=$2
      WHERE session_id=$1 AND expires_at > now()`,
-    [sessionId, extensionSeconds]
+    [sessionId, newExpiry]
   );
   return rowCount > 0;
 }
