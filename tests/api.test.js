@@ -20,7 +20,7 @@ describe('API routes', () => {
       .send({ username, password, captchaId: id, captcha: text });
     expect(reg.status).toBe(200);
     const login = await request(app).post('/api/login').send({ username, password });
-    expect(login.status).toBe(200);
+    expect(login.status).toBe(204);
     const setCookie = login.headers['set-cookie'][0];
     expect(setCookie).toContain('HttpOnly');
     expect(setCookie).toContain('Secure');
@@ -79,7 +79,7 @@ test('enforces single session and expires missing sessions', async () => {
     .send({ username, password, captchaId: id, captcha: text });
 
   const login1 = await request(app).post('/api/login').send({ username, password });
-  expect(login1.status).toBe(200);
+  expect(login1.status).toBe(204);
   const cookie1Header = login1.headers['set-cookie'][0];
   const cookie1 = cookie1Header.split(';')[0];
 
@@ -91,7 +91,7 @@ test('enforces single session and expires missing sessions', async () => {
   expect(logout.status).toBe(200);
 
   const login3 = await request(app).post('/api/login').send({ username, password });
-  expect(login3.status).toBe(200);
+  expect(login3.status).toBe(204);
   const cookie2Header = login3.headers['set-cookie'][0];
   const cookie2 = cookie2Header.split(';')[0];
 
@@ -109,5 +109,5 @@ test('enforces single session and expires missing sessions', async () => {
     .set('Cookie', cookie2)
     .send({ command: '前進' });
   expect(command.status).toBe(401);
-  expect(command.body).toEqual({ error: 'session-gone' });
+  expect(command.body).toEqual({ error: 'unauthorized' });
 });

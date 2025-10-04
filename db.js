@@ -12,8 +12,6 @@ const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
 const DEFAULT_IDLE_TIMEOUT_SEC = 30 * 60; // 30 minutes
 const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Number(process.env.SESSION_IDLE_TIMEOUT_SEC ?? DEFAULT_IDLE_TIMEOUT_SEC));
 const SESSION_IDLE_TIMEOUT_MS = SESSION_IDLE_TIMEOUT_SEC * 1000;
-const SESSION_TOUCH_EXTENSION_MS = SESSION_IDLE_TIMEOUT_MS || (30 * 60 * 1000);
-
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
   throw new Error('DATABASE_URL environment variable is required');
@@ -448,27 +446,17 @@ async function markEventsRead(playerId, upToId, client) {
   return true;
 }
 
-function sessionCreationExpiration(meta = {}) {
-  if (meta.expiresAt) return new Date(meta.expiresAt);
-  return new Date(Date.now() + SESSION_TTL_MS);
-}
-
-function sessionTouchExpiration() {
-  return new Date(Date.now() + SESSION_TOUCH_EXTENSION_MS);
-}
-
 async function createSession(accountId, meta = {}) {
   if (!accountId) throw new Error('accountId required');
   const sessionId = randomUUID();
-  const issuedAt = new Date();
-  const lastSeen = issuedAt;
-  const expiresAt = sessionCreationExpiration(meta);
+  const ttlSeconds = Math.max(1, Math.floor(SESSION_TTL_MS / 1000)) || 7 * 24 * 60 * 60;
   try {
     await pool.query(
-      'INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip) VALUES($1,$2,$3,$4,$5,$6,$7)',
-      [sessionId, accountId, issuedAt, lastSeen, expiresAt, meta.userAgent || null, meta.ip || null]
+      `INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip)
+       VALUES($1,$2,now(),now(),now() + ($3::int) * interval '1 second',$4,$5)`,
+      [sessionId, accountId, ttlSeconds, meta.userAgent || null, meta.ip || null]
     );
-    return { sessionId, expiresAt };
+    return { sessionId, expiresAt: new Date(Date.now() + ttlSeconds * 1000) };
   } catch (err) {
     if (err.code === '23505') {
       const e = new Error('already logged in');
@@ -483,14 +471,13 @@ async function replaceSession(accountId, meta = {}) {
   return withTx(async client => {
     await client.query('DELETE FROM sessions WHERE account_id=$1', [accountId]);
     const sessionId = randomUUID();
-    const issuedAt = new Date();
-    const lastSeen = issuedAt;
-    const expiresAt = sessionCreationExpiration(meta);
+    const ttlSeconds = Math.max(1, Math.floor(SESSION_TTL_MS / 1000)) || 7 * 24 * 60 * 60;
     await client.query(
-      'INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip) VALUES($1,$2,$3,$4,$5,$6,$7)',
-      [sessionId, accountId, issuedAt, lastSeen, expiresAt, meta.userAgent || null, meta.ip || null]
+      `INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip)
+       VALUES($1,$2,now(),now(),now() + ($3::int) * interval '1 second',$4,$5)`,
+      [sessionId, accountId, ttlSeconds, meta.userAgent || null, meta.ip || null]
     );
-    return { sessionId, expiresAt };
+    return { sessionId, expiresAt: new Date(Date.now() + ttlSeconds * 1000) };
   });
 }
 
@@ -508,10 +495,13 @@ async function deleteSession(sessionId) {
 
 async function touchSession(sessionId) {
   if (!sessionId) return false;
-  const expiresAt = sessionTouchExpiration();
+  let extensionSeconds = Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000);
+  if (extensionSeconds <= 0) extensionSeconds = 30 * 60;
   const { rowCount } = await pool.query(
-    'UPDATE sessions SET last_seen=now(), expires_at=$2 WHERE session_id=$1 AND expires_at > now()',
-    [sessionId, expiresAt]
+    `UPDATE sessions
+     SET last_seen=now(), expires_at=now() + ($2::int) * interval '1 second'
+     WHERE session_id=$1 AND expires_at > now()`,
+    [sessionId, extensionSeconds]
   );
   return rowCount > 0;
 }

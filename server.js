@@ -410,9 +410,9 @@ if (!SECRET) {
 
 const captchas = new Map();
 
-const COOKIE_BASE = { httpOnly: true, secure: true, sameSite: 'lax' };
+const COOKIE_BASE = { httpOnly: true, secure: true, sameSite: 'lax', path: '/' };
 const COOKIE_WITH_MAX_AGE = { ...COOKIE_BASE, maxAge: SESSION_TTL_MS };
-const JWT_EXP_SECONDS = Math.max(1, Math.floor(SESSION_TTL_MS / 1000));
+const JWT_EXPIRES_IN = '7d';
 const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000));
 
 function parseCookies(req) {
@@ -430,7 +430,7 @@ function parseCookies(req) {
 }
 
 function clearAuthCookie(res) {
-  res.clearCookie('token', COOKIE_BASE);
+  res.clearCookie('jwt', COOKIE_BASE);
 }
 
 const itemsPath = path.join(__dirname, 'data', 'items.json');
@@ -452,7 +452,7 @@ async function loadItems() {
 async function auth(req, res, next) {
   try {
     const cookies = parseCookies(req);
-    const token = cookies.token;
+    const token = cookies.jwt;
     if (!token) return res.status(401).json({ error: 'unauthorized' });
     let payload;
     try {
@@ -486,26 +486,12 @@ async function ensureActiveSession(req, res, next) {
     const session = req.sessionRow;
     if (!session) {
       clearAuthCookie(res);
-      return res.status(401).json({ error: 'session-gone' });
-    }
-    const now = Date.now();
-    const lastSeenMs = session.last_seen ? new Date(session.last_seen).getTime() : 0;
-    if (SESSION_IDLE_TIMEOUT_MS > 0 && lastSeenMs && now - lastSeenMs > SESSION_IDLE_TIMEOUT_MS) {
-      await db.deleteSession(session.session_id);
-      clearAuthCookie(res);
-      return res.status(401).json({ error: 'session-timeout' });
-    }
-    const expiresMs = session.expires_at ? new Date(session.expires_at).getTime() : 0;
-    if (expiresMs && now > expiresMs) {
-      await db.deleteSession(session.session_id);
-      clearAuthCookie(res);
-      return res.status(401).json({ error: 'session-expired' });
+      return res.status(401).json({ error: 'unauthorized' });
     }
     const touched = await db.touchSession(session.session_id);
     if (!touched) {
-      await db.deleteSession(session.session_id);
       clearAuthCookie(res);
-      return res.status(401).json({ error: 'session-expired' });
+      return res.status(401).json({ error: 'unauthorized' });
     }
     return next();
   } catch (err) {
@@ -763,10 +749,10 @@ app.post('/api/login', async (req, res) => {
     try {
       const { sessionId } = await db.createSession(account.id, { userAgent, ip });
       const token = jwt.sign({ sub: account.id, jti: sessionId, username: account.username }, SECRET, {
-        expiresIn: JWT_EXP_SECONDS
+        expiresIn: JWT_EXPIRES_IN
       });
-      res.cookie('token', token, COOKIE_WITH_MAX_AGE);
-      res.json({ ok: true });
+      res.cookie('jwt', token, COOKIE_WITH_MAX_AGE);
+      return res.status(204).end();
     } catch (err) {
       if (err && err.code === 'ALREADY_LOGGED_IN') {
         return res.status(409).json({ error: 'already-logged-in' });
