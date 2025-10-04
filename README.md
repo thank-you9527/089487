@@ -10,7 +10,19 @@ interface.
    - `export JWT_SECRET=your-secret`
    - `export SESSION_TTL_HOURS=24` *(optional, defaults to 24)*
    - `export SESSION_IDLE_TIMEOUT_SEC=600` *(optional, defaults to 600 seconds)*
+   - `export COOKIE_SECURE=true` *(optional; defaults to `true` when `NODE_ENV=production`, otherwise `false`)*
+   - `export DISABLE_CAPTCHA=false` *(optional; set to `true` locally to skip CAPTCHA checks while developing)*
    (Windows use `set` instead of `export`.)
+   You can also place these values in a `.env` file if you use a manager like [direnv](https://direnv.net/) or `dotenv-cli`.
+
+   **Local development example**
+   ```bash
+   NODE_ENV=development
+   COOKIE_SECURE=false
+   DISABLE_CAPTCHA=true
+   DATABASE_URL=postgres://user:pass@localhost:5432/game
+   JWT_SECRET=replace-this-with-a-random-string
+   ```
 3. Start the server: `npm start`
 4. Open `http://localhost:3000/` in your browser.
    The landing page offers links to register or log in before entering the game.

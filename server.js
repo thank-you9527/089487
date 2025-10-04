@@ -410,8 +410,14 @@ if (!SECRET) {
 
 const captchas = new Map();
 
-const COOKIE_BASE = { httpOnly: true, secure: true, sameSite: 'lax', path: '/' };
+const SECURE_COOKIE =
+  process.env.COOKIE_SECURE != null
+    ? process.env.COOKIE_SECURE === 'true'
+    : process.env.NODE_ENV === 'production';
+
+const COOKIE_BASE = { httpOnly: true, sameSite: 'lax', secure: SECURE_COOKIE, path: '/' };
 const COOKIE_WITH_MAX_AGE = { ...COOKIE_BASE, maxAge: SESSION_TTL_MS };
+const DISABLE_CAPTCHA = process.env.DISABLE_CAPTCHA === 'true';
 const JWT_EXPIRES_IN = '7d';
 const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000));
 
@@ -427,6 +433,10 @@ function parseCookies(req) {
     acc[key] = decodeURIComponent(value || '');
     return acc;
   }, {});
+}
+
+function setAuthCookie(res, token) {
+  res.cookie('jwt', token, COOKIE_WITH_MAX_AGE);
 }
 
 function clearAuthCookie(res) {
@@ -459,7 +469,8 @@ async function auth(req, res, next) {
       payload = jwt.verify(token, SECRET);
     } catch (err) {
       clearAuthCookie(res);
-      return res.status(401).json({ error: 'bad-token' });
+      const code = err?.name === 'TokenExpiredError' ? 'session-expired' : 'bad-token';
+      return res.status(401).json({ error: code });
     }
     const { sub, jti, username } = payload;
     if (!sub || !jti || !username) {
@@ -488,10 +499,24 @@ async function ensureActiveSession(req, res, next) {
       clearAuthCookie(res);
       return res.status(401).json({ error: 'unauthorized' });
     }
+    const now = Date.now();
+    let failureCode = 'unauthorized';
+    if (session?.expires_at) {
+      const expiresAt = new Date(session.expires_at).getTime();
+      if (Number.isFinite(expiresAt) && expiresAt <= now) {
+        failureCode = 'session-expired';
+      }
+    }
+    if (failureCode === 'unauthorized' && session?.last_seen && SESSION_IDLE_TIMEOUT_MS > 0) {
+      const lastSeen = new Date(session.last_seen).getTime();
+      if (Number.isFinite(lastSeen) && lastSeen + SESSION_IDLE_TIMEOUT_MS <= now) {
+        failureCode = 'session-timeout';
+      }
+    }
     const touched = await db.touchSession(session.session_id);
     if (!touched) {
       clearAuthCookie(res);
-      return res.status(401).json({ error: 'unauthorized' });
+      return res.status(401).json({ error: failureCode });
     }
     return next();
   } catch (err) {
@@ -708,11 +733,15 @@ app.post('/api/register', async (req, res) => {
   if (!userRegex.test(username) || !passRegex.test(password)) {
     return res.status(400).json({ error: 'invalid input' });
   }
-  const expected = captchas.get(captchaId);
-  if (!expected || expected !== captcha) {
-    return res.status(400).json({ error: 'invalid captcha' });
+  if (!DISABLE_CAPTCHA) {
+    const expected = captchas.get(captchaId);
+    if (!expected || expected !== captcha) {
+      return res.status(400).json({ error: 'invalid captcha' });
+    }
   }
-  captchas.delete(captchaId);
+  if (captchaId) {
+    captchas.delete(captchaId);
+  }
   try {
     if (await isAnyNameTaken(username)) {
       return res.status(400).json({ error: 'username-taken' });
@@ -768,12 +797,9 @@ app.post('/api/login', async (req, res) => {
       const token = jwt.sign({ sub: account.id, jti: sessionId, username: account.username }, SECRET, {
         expiresIn: JWT_EXPIRES_IN
       });
-      res.cookie('jwt', token, COOKIE_WITH_MAX_AGE);
+      setAuthCookie(res, token);
       return res.status(204).end();
     } catch (err) {
-      if (err && err.code === 'ALREADY_LOGGED_IN') {
-        return res.status(409).json({ error: 'already-logged-in' });
-      }
       console.error('createSession failed', err);
       return res.status(500).json({ error: 'internal error' });
     }
@@ -890,7 +916,7 @@ app.get('/api/character', auth, ensureActiveSession, RATE_LIMITER, async (req, r
       return responseCharacter(character);
     });
     if (!result) {
-      return res.status(404).json({ error: 'not found' });
+      return res.status(404).json({ error: 'character-missing' });
     }
     res.json({
       name: result.name,

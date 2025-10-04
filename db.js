@@ -517,16 +517,7 @@ async function createSession(accountId, meta = {}) {
   if (!accountId) throw new Error('accountId required');
   return withTx(async client => {
     const runner = exec(client);
-    await runner.query('DELETE FROM sessions WHERE account_id=$1 AND expires_at <= now()', [accountId]);
-    const { rows } = await runner.query(
-      'SELECT 1 FROM sessions WHERE account_id=$1 AND expires_at > now() LIMIT 1',
-      [accountId]
-    );
-    if (rows.length > 0) {
-      const err = new Error('already logged in');
-      err.code = 'ALREADY_LOGGED_IN';
-      throw err;
-    }
+    await runner.query('DELETE FROM sessions WHERE account_id=$1', [accountId]);
     const sessionId = randomUUID();
     try {
       await runner.query(
@@ -535,11 +526,6 @@ async function createSession(accountId, meta = {}) {
         [sessionId, accountId, Math.max(1, Math.floor(SESSION_TTL_MS)), meta.userAgent || null, meta.ip || null]
       );
     } catch (err) {
-      if (err.code === '23505') {
-        const dup = new Error('already logged in');
-        dup.code = 'ALREADY_LOGGED_IN';
-        throw dup;
-      }
       throw err;
     }
     const expiresAt = new Date(Date.now() + Math.max(1, Math.floor(SESSION_TTL_MS)));

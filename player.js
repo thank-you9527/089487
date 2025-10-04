@@ -14,6 +14,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     handleAuthFailure(data?.error);
     return;
   }
+  if (res.status === 404) {
+    alert('尚未建立角色，請先返回遊戲頁面創角。');
+    window.location.href = 'index.html';
+    return;
+  }
   if (!res.ok) {
     alert('無法載入角色資訊，請稍後再試。');
     return;
