@@ -60,14 +60,15 @@ describe('crafting commands', () => {
       Math.random = originalRandom;
     }
 
-    expect(logs[0]).toContain('製作者製作了');
+    expect(logs[0]).toBe('製作成功！');
     expect(logs).toEqual(
       expect.arrayContaining([
-        '製作成功！',
         expect.stringMatching(/^道具名稱：/),
         expect.stringMatching(/^等級：/),
         expect.stringMatching(/^製作者：製作者/),
-        expect.stringMatching(/^持有者：無/)
+        expect.stringMatching(/^持有者：無/),
+        expect.stringMatching(/^能力：/),
+        expect.stringMatching(/^描述：/)
       ])
     );
     expect(ctx.c.action).toBe(4);
@@ -96,7 +97,7 @@ describe('crafting commands', () => {
     } finally {
       Math.random = originalRandom;
     }
-    expect(refreshLogs[0]).toContain('製作者製作了');
+    expect(refreshLogs[0]).toBe('製作成功！');
     expect(refreshLogs).toEqual(expect.arrayContaining(['製作成功！']));
     const refreshed = await db.findActiveItemByNameNorm('測試用道具'.normalize('NFKC').toLowerCase());
     expect(refreshed).toBeTruthy();
@@ -165,7 +166,7 @@ describe('crafting commands', () => {
     } finally {
       Math.random = originalRandom;
     }
-    expect(logsAfter[0]).toContain('其他人製作了');
+    expect(logsAfter[0]).toBe('製作成功！');
     expect(logsAfter).toEqual(expect.arrayContaining(['製作成功！']));
   });
 

@@ -149,13 +149,12 @@ module.exports = {
           }
           loc.monsters.push(monster);
           await ctx.saveMap();
-          logs.push(`在${loc.name}孵化出${mName}（等級${ctx.fmt(lvl)}）`);
+          logs.push(`在${loc.name}孵化出${mName}`);
           const attackValue = ctx.fmt ? ctx.fmt(monster.attack) : Math.round(monster.attack ?? 0);
           const hpValue = ctx.fmt
             ? ctx.fmt(monster.hp ?? monster.maxHp)
             : Math.round((monster.hp ?? monster.maxHp) ?? 0);
           const pos = ctx.c.position || { x: 0, y: 0, z: 0 };
-          logs.push(mName);
           logs.push(`等級：${ctx.fmt ? ctx.fmt(lvl) : Math.round(lvl)}`);
           logs.push(`攻擊力：${attackValue}`);
           logs.push(`血量：${hpValue}`);

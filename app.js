@@ -17,7 +17,23 @@ const backBtn = document.getElementById('backBtn');
 const downloadBtn = document.getElementById('downloadBtn');
 const currentUser = localStorage.getItem('currentUser');
 const logKey = currentUser ? `logs_${currentUser}` : 'logs';
-let logs = JSON.parse(localStorage.getItem(logKey) || '[]');
+const storedLogs = JSON.parse(localStorage.getItem(logKey) || '[]');
+let logs = Array.isArray(storedLogs)
+  ? storedLogs.map(entry => {
+      if (entry && Array.isArray(entry.lines)) {
+        return {
+          date: entry.date || new Date().toISOString(),
+          lines: entry.lines.map(line => String(line ?? ''))
+        };
+      }
+      const text = typeof entry?.text === 'string' ? entry.text : '';
+      const legacyLines = text ? String(text).split('\n') : [];
+      return {
+        date: entry?.date || new Date().toISOString(),
+        lines: legacyLines.length > 0 ? legacyLines : ['']
+      };
+    })
+  : [];
 let loadedCount = 10; // 每次顯示的筆數
 let sessionExpired = false;
 const HEARTBEAT_VISIBLE_MS = 60_000;
@@ -26,11 +42,43 @@ let heartbeatTimer = null;
 let heartbeatFailures = 0;
 let logoutBeaconSent = false;
 let pendingBeaconTimer = null;
+let eventSource = null;
+
+function normalizeLines(input) {
+  if (Array.isArray(input)) {
+    return input.flatMap(line => {
+      if (line == null) return [''];
+      return String(line)
+        .split('\n')
+        .map(chunk => chunk);
+    });
+  }
+  if (input == null) return [''];
+  return String(input)
+    .split('\n')
+    .map(chunk => chunk);
+}
+
+function appendBlock(lines) {
+  const normalized = normalizeLines(lines).map(line => line);
+  const entry = { date: new Date().toISOString(), lines: normalized };
+  logs.push(entry);
+  localStorage.setItem(logKey, JSON.stringify(logs));
+  renderLogs();
+}
 
 function handleSessionExpired(message = '登入已失效，請重新登入') {
   if (sessionExpired) return;
   sessionExpired = true;
   stopHeartbeat();
+  if (eventSource) {
+    try {
+      eventSource.close();
+    } catch (err) {
+      // ignore
+    }
+    eventSource = null;
+  }
   alert(message);
   sessionStorage.removeItem('returnShown');
   localStorage.removeItem('currentUser');
@@ -75,7 +123,7 @@ async function sendHeartbeat() {
   } catch (err) {
     heartbeatFailures += 1;
     if (heartbeatFailures >= 3) {
-      addLog('連線異常，請檢查網路或稍後再試。');
+      appendBlock('連線異常，請檢查網路或稍後再試。');
       stopHeartbeat();
     }
     return false;
@@ -101,6 +149,47 @@ function startHeartbeat() {
     if (!sessionExpired && heartbeatFailures < 3) {
       scheduleHeartbeat();
     }
+  });
+}
+
+function stopEventStream() {
+  if (!eventSource) return;
+  try {
+    eventSource.close();
+  } catch (err) {
+    // ignore
+  }
+  eventSource = null;
+}
+
+function startEventStream() {
+  stopEventStream();
+  try {
+    eventSource = new EventSource('/api/events');
+  } catch (err) {
+    console.error('failed to open event stream', err);
+    return;
+  }
+  eventSource.onmessage = evt => {
+    if (!evt?.data) return;
+    try {
+      const payload = JSON.parse(evt.data);
+      const candidate = payload?.block ?? payload?.lines ?? payload?.logs;
+      if (Array.isArray(candidate)) {
+        if (candidate.every(item => Array.isArray(item))) {
+          candidate.forEach(block => appendBlock(block));
+        } else if (candidate.length > 0) {
+          appendBlock(candidate);
+        }
+      } else if (typeof payload?.message === 'string') {
+        appendBlock(payload.message);
+      }
+    } catch (err) {
+      console.error('failed to parse event payload', err);
+    }
+  };
+  eventSource.addEventListener('error', () => {
+    // browser will auto-retry; no-op
   });
 }
 
@@ -187,23 +276,16 @@ async function ensureCharacter() {
     });
     if (await handleUnauthorizedResponse(createRes)) return false;
     if (!createRes.ok) {
-      addLog('建立角色失敗，請稍後再試。');
+      appendBlock('建立角色失敗，請稍後再試。');
       return false;
     }
     return true;
   }
   if (!res.ok) {
-    addLog('無法讀取角色資料，請稍後再試。');
+    appendBlock('無法讀取角色資料，請稍後再試。');
     return false;
   }
   return true;
-}
-
-function addLog(text) {
-  const entry = { date: new Date().toISOString(), text };
-  logs.push(entry);
-  localStorage.setItem(logKey, JSON.stringify(logs));
-  renderLogs();
 }
 
 function createLogFragment(entry) {
@@ -213,7 +295,9 @@ function createLogFragment(entry) {
   timestampLine.textContent = `[${new Date(entry.date).toLocaleString()}]`;
   fragment.appendChild(timestampLine);
 
-  const lines = String(entry.text ?? '').split('\n');
+  const lines = Array.isArray(entry.lines)
+    ? entry.lines
+    : String(entry.text ?? '').split('\n');
   if (lines.length === 0) {
     const emptyLine = document.createElement('p');
     emptyLine.className = 'log-message';
@@ -246,12 +330,12 @@ function initialMessage() {
   const firstVisit = !localStorage.getItem(firstVisitKey);
   const returnShown = sessionStorage.getItem('returnShown');
   if (firstVisit) {
-    addLog('歡迎您來到遊戲的世界，輸入help以查看指令！');
+    appendBlock('歡迎您來到遊戲的世界，輸入help以查看指令！');
     localStorage.setItem(firstVisitKey, 'true');
   } else {
     renderLogs();
     if (!returnShown) {
-      addLog('歡迎您回到遊戲的世界，繼續冒險吧！');
+      appendBlock('歡迎您回到遊戲的世界，繼續冒險吧！');
       sessionStorage.setItem('returnShown', 'true');
     }
   }
@@ -269,18 +353,29 @@ sendBtn.addEventListener('click', async () => {
     });
     if (res.ok) {
       const data = await res.json();
-      (data.logs || []).forEach((l) => addLog(l));
+      const candidate = data.block ?? data.lines ?? data.logs;
+      if (Array.isArray(candidate)) {
+        if (candidate.every(item => Array.isArray(item))) {
+          candidate.forEach(block => appendBlock(block));
+        } else {
+          appendBlock(candidate);
+        }
+      } else if (Array.isArray(data?.blocks)) {
+        data.blocks.forEach(block => appendBlock(block));
+      } else if (typeof data?.message === 'string') {
+        appendBlock(data.message);
+      }
     } else if (res.status === 429) {
       const data = await res.json().catch(() => ({}));
       const retry = data?.retryAfter;
-      addLog(retry ? `操作太快，請於 ${retry} 秒後再試。` : '操作太快，請稍後再試。');
+      appendBlock(retry ? `操作太快，請於 ${retry} 秒後再試。` : '操作太快，請稍後再試。');
     } else if (await handleUnauthorizedResponse(res)) {
       return;
     } else {
-      addLog('指令送出失敗，請稍後再試。');
+      appendBlock('指令送出失敗，請稍後再試。');
     }
   } catch (e) {
-    addLog('無法連線到伺服器');
+    appendBlock('無法連線到伺服器');
   } finally {
     commandInput.value = '';
   }
@@ -293,7 +388,10 @@ searchToggle.addEventListener('click', () => {
   } else {
     const keyword = searchInput.value.trim();
     if (keyword) {
-      const result = logs.filter((l) => l.text.includes(keyword));
+      const result = logs.filter((l) => {
+        const joined = Array.isArray(l.lines) ? l.lines.join('\n') : String(l.text ?? '');
+        return joined.includes(keyword);
+      });
       logsDiv.innerHTML = '';
       const fragment = document.createDocumentFragment();
       result.forEach((entry) => {
@@ -329,6 +427,7 @@ logoutBtn.addEventListener('click', async () => {
       const res = await fetch('/api/logout', { method: 'POST', credentials: 'include' });
       if (res.ok) {
         stopHeartbeat();
+        stopEventStream();
         sessionStorage.removeItem('returnShown');
         localStorage.removeItem('currentUser');
         location.href = 'login.html';
@@ -336,7 +435,7 @@ logoutBtn.addEventListener('click', async () => {
         await handleUnauthorizedResponse(res);
       }
     } catch (e) {
-      addLog('登出時發生錯誤，請稍後再試。');
+      appendBlock('登出時發生錯誤，請稍後再試。');
     }
   }
 });
@@ -362,7 +461,11 @@ clearLogsBtn.addEventListener('click', () => {
 
 exportLogsBtn.addEventListener('click', () => {
   const content = logs
-    .map((l) => `[${new Date(l.date).toLocaleString()}] ${l.text}`)
+    .map((l) => {
+      const header = `[${new Date(l.date).toLocaleString()}]`;
+      const body = Array.isArray(l.lines) ? l.lines.join('\n') : String(l.text ?? '');
+      return `${header}\n${body}`;
+    })
     .join('\n');
   const blob = new Blob([content], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
@@ -383,5 +486,6 @@ setupLifecycleHandlers();
 ensureCharacter().then((ok) => {
   if (ok === false) return;
   startHeartbeat();
+  startEventStream();
   initialMessage();
 });

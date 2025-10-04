@@ -12,6 +12,16 @@ function fmt(ctx, value) {
   return typeof ctx?.fmt === 'function' ? ctx.fmt(value) : Math.round(value);
 }
 
+function fmtPct(value) {
+  const num = Number(value);
+  if (!(num > 0)) return null;
+  const percent = num * 100;
+  if (percent > 0 && percent < 1) {
+    return `${(Math.round(percent * 10) / 10).toFixed(1)}%`;
+  }
+  return `${Math.round(percent)}%`;
+}
+
 function findCharacterByAccount(users, accountId) {
   if (!Array.isArray(users)) return null;
   for (const entry of users) {
@@ -28,32 +38,19 @@ function resolveAccountName(ctx, accountId) {
   return character?.name || null;
 }
 
-function formatCraftMessage(name, prefixKey, level, effects, ctx) {
-  const prefixLabel = getPrefixLabel(prefixKey);
-  const summary = formatEffectsSummary(prefixKey, level, effects, v => fmt(ctx, v));
-  const lines = [];
-  lines.push(`${ctx.c.name}製作了${prefixLabel}${name}（等級${fmt(ctx, level)}）`);
-  if (summary.length > 0) {
-    lines.push(`效果：${summary.join('，')}`);
-  }
-  return lines;
-}
-
 function formatAbilityList(effects) {
   if (!effects || typeof effects !== 'object') return [];
   const parts = [];
-  const addPercent = (value, label, suffix = '%') => {
-    const percent = Math.round((Number(value) || 0) * 100);
-    if (percent > 0) parts.push(`${label} +${percent}${suffix}`);
+  const addPercent = (value, label) => {
+    const formatted = fmtPct(value);
+    if (formatted) parts.push(`${label} +${formatted}`);
   };
   addPercent(effects.atk_pct, '攻擊');
   addPercent(effects.lifesteal_pct, '吸血');
   addPercent(effects.dodge_pct, '閃避');
-  if (effects.crit_pct) {
-    const critPercent = Math.round(Math.max(0, effects.crit_pct) * 100);
-    if (critPercent > 0) {
-      parts.push(`爆擊率 +${critPercent}% ，爆擊倍率 3.5×`);
-    }
+  const critFormatted = fmtPct(effects.crit_pct);
+  if (critFormatted) {
+    parts.push(`爆擊率 +${critFormatted}，爆擊倍率 3.5×`);
   }
   if (effects.can_blink) {
     parts.push('可使用傳送（尚未開放）');
@@ -173,8 +170,6 @@ async function handleCraft(cmd, ctx, logs) {
       }
     }
 
-    const lines = formatCraftMessage(value, saved.prefix, saved.level, saved.effects, ctx);
-    lines.forEach(line => logs.push(line));
     const cardLines = formatItemCard(saved, ctx);
     cardLines.forEach(line => logs.push(line));
     ctx.queueEvent?.({

@@ -1175,10 +1175,12 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         eventsToPublish.push({ playerId: entry.playerId, event: row });
       }
 
+      const block = logs.slice();
+
       const selfEvent = await db.appendEvent(
         req.user.id,
         'command',
-        { command: trimmed, logs },
+        { command: trimmed, block, logs: block },
         client
       );
       eventsToPublish.push({ playerId: req.user.id, event: selfEvent });
@@ -1186,13 +1188,13 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         const targetEvent = await db.appendEvent(
           targetPlayerId,
           'command',
-          { command: trimmed, logs },
+          { command: trimmed, block, logs: block },
           client
         );
         eventsToPublish.push({ playerId: targetPlayerId, event: targetEvent });
       }
 
-      return { status: 200, body: { logs } };
+      return { status: 200, body: { block, logs: block } };
     });
 
     const status = outcome?.status ?? 500;
