@@ -36,6 +36,7 @@ let logs = Array.isArray(storedLogs)
   : [];
 let loadedCount = 10; // 每次顯示的筆數
 let sessionExpired = false;
+let isAuthenticated = false;
 const HEARTBEAT_VISIBLE_MS = 60_000;
 const HEARTBEAT_HIDDEN_MS = 120_000;
 let heartbeatTimer = null;
@@ -70,6 +71,7 @@ function appendBlock(lines) {
 function handleSessionExpired(message = '登入已失效，請重新登入') {
   if (sessionExpired) return;
   sessionExpired = true;
+  isAuthenticated = false;
   stopHeartbeat();
   if (eventSource) {
     try {
@@ -109,7 +111,7 @@ function stopHeartbeat() {
 }
 
 async function sendHeartbeat() {
-  if (sessionExpired) return false;
+  if (sessionExpired || !isAuthenticated) return false;
   try {
     const res = await fetch('/api/ping', {
       method: 'POST',
@@ -131,7 +133,7 @@ async function sendHeartbeat() {
 }
 
 function scheduleHeartbeat() {
-  if (sessionExpired) return;
+  if (sessionExpired || !isAuthenticated) return;
   stopHeartbeat();
   const interval = document.hidden ? HEARTBEAT_HIDDEN_MS : HEARTBEAT_VISIBLE_MS;
   heartbeatTimer = setTimeout(async () => {
@@ -143,10 +145,11 @@ function scheduleHeartbeat() {
 }
 
 function startHeartbeat() {
+  if (!isAuthenticated) return;
   heartbeatFailures = 0;
   stopHeartbeat();
   sendHeartbeat().finally(() => {
-    if (!sessionExpired && heartbeatFailures < 3) {
+    if (!sessionExpired && isAuthenticated && heartbeatFailures < 3) {
       scheduleHeartbeat();
     }
   });
@@ -165,7 +168,7 @@ function stopEventStream() {
 function startEventStream() {
   stopEventStream();
   try {
-    eventSource = new EventSource('/api/events');
+    eventSource = new EventSource('/api/events', { withCredentials: true });
   } catch (err) {
     console.error('failed to open event stream', err);
     return;
@@ -194,7 +197,7 @@ function startEventStream() {
 }
 
 function sendLogoutBeacon() {
-  if (sessionExpired) return;
+  if (sessionExpired || !isAuthenticated) return;
   if (logoutBeaconSent) return;
   logoutBeaconSent = true;
   try {
@@ -225,7 +228,7 @@ function scheduleLogoutBeacon() {
     clearTimeout(pendingBeaconTimer);
     pendingBeaconTimer = null;
   }
-  if (sessionExpired) return;
+  if (sessionExpired || !isAuthenticated) return;
   pendingBeaconTimer = setTimeout(() => {
     pendingBeaconTimer = null;
     sendLogoutBeacon();
@@ -234,7 +237,7 @@ function scheduleLogoutBeacon() {
 
 function setupLifecycleHandlers() {
   document.addEventListener('visibilitychange', () => {
-    if (sessionExpired) return;
+    if (sessionExpired || !isAuthenticated) return;
     if (document.visibilityState === 'hidden') {
       scheduleLogoutBeacon();
     } else {
@@ -248,12 +251,12 @@ function setupLifecycleHandlers() {
   });
 
   window.addEventListener('pagehide', () => {
-    if (sessionExpired) return;
+    if (sessionExpired || !isAuthenticated) return;
     sendLogoutBeacon();
   });
 
   window.addEventListener('beforeunload', () => {
-    if (sessionExpired) return;
+    if (sessionExpired || !isAuthenticated) return;
     sendLogoutBeacon();
   });
 }
@@ -279,12 +282,14 @@ async function ensureCharacter() {
       appendBlock('建立角色失敗，請稍後再試。');
       return false;
     }
+    isAuthenticated = true;
     return true;
   }
   if (!res.ok) {
     appendBlock('無法讀取角色資料，請稍後再試。');
     return false;
   }
+  isAuthenticated = true;
   return true;
 }
 
@@ -426,6 +431,7 @@ logoutBtn.addEventListener('click', async () => {
     try {
       const res = await fetch('/api/logout', { method: 'POST', credentials: 'include' });
       if (res.ok) {
+        isAuthenticated = false;
         stopHeartbeat();
         stopEventStream();
         sessionStorage.removeItem('returnShown');
