@@ -206,14 +206,38 @@ function addLog(text) {
   renderLogs();
 }
 
+function createLogFragment(entry) {
+  const fragment = document.createDocumentFragment();
+  const timestampLine = document.createElement('p');
+  timestampLine.className = 'log-timestamp';
+  timestampLine.textContent = `[${new Date(entry.date).toLocaleString()}]`;
+  fragment.appendChild(timestampLine);
+
+  const lines = String(entry.text ?? '').split('\n');
+  if (lines.length === 0) {
+    const emptyLine = document.createElement('p');
+    emptyLine.className = 'log-message';
+    fragment.appendChild(emptyLine);
+  } else {
+    lines.forEach((line) => {
+      const messageLine = document.createElement('p');
+      messageLine.className = 'log-message';
+      messageLine.textContent = line;
+      fragment.appendChild(messageLine);
+    });
+  }
+
+  return fragment;
+}
+
 function renderLogs() {
   logsDiv.innerHTML = '';
   const start = Math.max(0, logs.length - loadedCount);
-  logs.slice(start).forEach((l) => {
-    const p = document.createElement('p');
-    p.textContent = `[${new Date(l.date).toLocaleString()}] ${l.text}`;
-    logsDiv.appendChild(p);
+  const fragment = document.createDocumentFragment();
+  logs.slice(start).forEach((entry) => {
+    fragment.appendChild(createLogFragment(entry));
   });
+  logsDiv.appendChild(fragment);
   logContainer.scrollTop = logContainer.scrollHeight;
 }
 
@@ -271,11 +295,11 @@ searchToggle.addEventListener('click', () => {
     if (keyword) {
       const result = logs.filter((l) => l.text.includes(keyword));
       logsDiv.innerHTML = '';
-      result.forEach((l) => {
-        const p = document.createElement('p');
-        p.textContent = `[${new Date(l.date).toLocaleString()}] ${l.text}`;
-        logsDiv.appendChild(p);
+      const fragment = document.createDocumentFragment();
+      result.forEach((entry) => {
+        fragment.appendChild(createLogFragment(entry));
       });
+      logsDiv.appendChild(fragment);
     } else {
       searchInput.classList.add('hidden');
       renderLogs();

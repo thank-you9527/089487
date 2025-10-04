@@ -12,6 +12,22 @@ function fmt(ctx, value) {
   return typeof ctx?.fmt === 'function' ? ctx.fmt(value) : Math.round(value);
 }
 
+function findCharacterByAccount(users, accountId) {
+  if (!Array.isArray(users)) return null;
+  for (const entry of users) {
+    if (entry?.character?.accountId === accountId || entry?.username === accountId) {
+      return entry.character || null;
+    }
+  }
+  return null;
+}
+
+function resolveAccountName(ctx, accountId) {
+  if (!accountId) return null;
+  const character = findCharacterByAccount(ctx?.users, accountId);
+  return character?.name || null;
+}
+
 function formatCraftMessage(name, prefixKey, level, effects, ctx) {
   const prefixLabel = getPrefixLabel(prefixKey);
   const summary = formatEffectsSummary(prefixKey, level, effects, v => fmt(ctx, v));
@@ -23,12 +39,47 @@ function formatCraftMessage(name, prefixKey, level, effects, ctx) {
   return lines;
 }
 
-function findCharacterByAccount(users, accountId) {
-  if (!Array.isArray(users)) return null;
-  for (const entry of users) {
-    if (entry?.character?.accountId === accountId) return entry.character;
+function formatAbilityList(effects) {
+  if (!effects || typeof effects !== 'object') return [];
+  const parts = [];
+  const addPercent = (value, label, suffix = '%') => {
+    const percent = Math.round((Number(value) || 0) * 100);
+    if (percent > 0) parts.push(`${label} +${percent}${suffix}`);
+  };
+  addPercent(effects.atk_pct, '攻擊');
+  addPercent(effects.lifesteal_pct, '吸血');
+  addPercent(effects.dodge_pct, '閃避');
+  if (effects.crit_pct) {
+    const critPercent = Math.round(Math.max(0, effects.crit_pct) * 100);
+    if (critPercent > 0) {
+      parts.push(`爆擊率 +${critPercent}% ，爆擊倍率 3.5×`);
+    }
   }
-  return null;
+  if (effects.can_blink) {
+    parts.push('可使用傳送（尚未開放）');
+  }
+  if (effects.is_sacrifice) {
+    parts.push('合成保底（尚未開放）');
+  }
+  return parts;
+}
+
+function formatItemCard(item, ctx) {
+  const prefixLabel = getPrefixLabel(item.prefix);
+  const makerName = resolveAccountName(ctx, item.makerId) || item.makerId;
+  const ownerName = item.ownerId ? resolveAccountName(ctx, item.ownerId) || item.ownerId : '無';
+  const abilityParts = formatAbilityList(item.effects);
+  const prefixDef = resolvePrefix(item.prefix);
+  const description = item.description || prefixDef?.description || '-';
+  const lines = [];
+  lines.push('製作成功！');
+  lines.push(`道具名稱：${prefixLabel}${item.baseName}`);
+  lines.push(`等級：${fmt(ctx, item.level)}`);
+  lines.push(`製作者：${makerName}`);
+  lines.push(`持有者：${ownerName || '無'}`);
+  lines.push(`能力：${abilityParts.length > 0 ? abilityParts.join('、') : '-'}`);
+  lines.push(`描述：${description || '-'}`);
+  return lines;
 }
 
 async function handleCraft(cmd, ctx, logs) {
@@ -39,7 +90,8 @@ async function handleCraft(cmd, ctx, logs) {
     return;
   }
 
-  if (Math.round(ctx.c.action || 0) < 1) {
+  const currentAction = Math.round(ctx.c.action ?? 0);
+  if (currentAction < 1) {
     logs.push('行動值不足');
     return;
   }
@@ -50,7 +102,7 @@ async function handleCraft(cmd, ctx, logs) {
     return;
   }
 
-  ctx.c.action = Math.max(0, Math.round(ctx.c.action) - 1);
+  ctx.c.action = Math.max(0, currentAction - 1);
   ctx.c.lastActionUpdate = Date.now();
   ctx.markPlayerDirty?.(ctx.c.accountId);
 
@@ -123,6 +175,8 @@ async function handleCraft(cmd, ctx, logs) {
 
     const lines = formatCraftMessage(value, saved.prefix, saved.level, saved.effects, ctx);
     lines.forEach(line => logs.push(line));
+    const cardLines = formatItemCard(saved, ctx);
+    cardLines.forEach(line => logs.push(line));
     ctx.queueEvent?.({
       playerId: ctx.c.accountId,
       kind: 'craft',

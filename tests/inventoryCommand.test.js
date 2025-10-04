@@ -20,7 +20,7 @@ describe('inventory command outputs', () => {
     };
     inventory.handlers['查看家當'](ctx, logs);
     expect(logs[0]).toContain('Hero的所有家當！');
-    expect(logs[0]).toContain('1.brave 木刀 Lv.12');
+    expect(logs[0]).toContain('1.驍勇木刀 Lv.12');
     expect(logs[0]).toContain('2.石盾 Lv.5');
   });
 

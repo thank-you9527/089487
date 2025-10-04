@@ -30,8 +30,14 @@ module.exports = {
       prefix: '佔領/',
       handler: async (cmd, ctx, logs) => {
         const areaName = cmd.split('/')[1];
-        ctx.c.action = Math.max(0, ctx.c.action - 1);
+        const currentAction = Math.round(ctx.c.action ?? 0);
+        if (currentAction < 1) {
+          logs.push('行動值不足');
+          return;
+        }
+        ctx.c.action = Math.max(0, currentAction - 1);
         ctx.c.lastActionUpdate = Date.now();
+        ctx.markPlayerDirty?.(ctx.c.accountId);
         const info = ctx.getLocationInfo(ctx.c.position);
         const normalizedAreaName = areaName ? areaName.toLowerCase() : '';
         const nameTaken = Object.values(ctx.worldMap).some(loc => {
@@ -102,13 +108,19 @@ module.exports = {
     },
     {
       prefix: '孵化/',
-      handler: async (cmd, ctx, logs) => {
-        const mName = cmd.split('/')[1];
-        ctx.c.action = Math.max(0, ctx.c.action - 1);
-        ctx.c.lastActionUpdate = Date.now();
-        const key = `${ctx.c.position.x},${ctx.c.position.y},${ctx.c.position.z}`;
-        const loc = ctx.worldMap[key];
-        const monsterTaken = await ctx.isMonsterNameTaken(mName);
+        handler: async (cmd, ctx, logs) => {
+          const mName = cmd.split('/')[1];
+          const currentAction = Math.round(ctx.c.action ?? 0);
+          if (currentAction < 1) {
+            logs.push('行動值不足');
+            return;
+          }
+          ctx.c.action = Math.max(0, currentAction - 1);
+          ctx.c.lastActionUpdate = Date.now();
+          ctx.markPlayerDirty?.(ctx.c.accountId);
+          const key = `${ctx.c.position.x},${ctx.c.position.y},${ctx.c.position.z}`;
+          const loc = ctx.worldMap[key];
+          const monsterTaken = await ctx.isMonsterNameTaken(mName);
         const playerTaken = ctx.listPlayersByName(mName).length > 0;
         if (
           !mName ||
@@ -138,6 +150,16 @@ module.exports = {
           loc.monsters.push(monster);
           await ctx.saveMap();
           logs.push(`在${loc.name}孵化出${mName}（等級${ctx.fmt(lvl)}）`);
+          const attackValue = ctx.fmt ? ctx.fmt(monster.attack) : Math.round(monster.attack ?? 0);
+          const hpValue = ctx.fmt
+            ? ctx.fmt(monster.hp ?? monster.maxHp)
+            : Math.round((monster.hp ?? monster.maxHp) ?? 0);
+          const pos = ctx.c.position || { x: 0, y: 0, z: 0 };
+          logs.push(mName);
+          logs.push(`等級：${ctx.fmt ? ctx.fmt(lvl) : Math.round(lvl)}`);
+          logs.push(`攻擊力：${attackValue}`);
+          logs.push(`血量：${hpValue}`);
+          logs.push(`位置：(${pos.x},${pos.y},${pos.z})`);
         }
       }
     }

@@ -42,7 +42,7 @@ describe('crafting commands', () => {
       inventory: [],
       position: { x: 0, y: 0, z: 0 }
     };
-    ctx.users.push({ character: ctx.c });
+    ctx.users.push({ username: ctx.c.accountId, character: ctx.c });
     const logs = [];
 
     const originalRandom = Math.random;
@@ -61,6 +61,15 @@ describe('crafting commands', () => {
     }
 
     expect(logs[0]).toContain('製作者製作了');
+    expect(logs).toEqual(
+      expect.arrayContaining([
+        '製作成功！',
+        expect.stringMatching(/^道具名稱：/),
+        expect.stringMatching(/^等級：/),
+        expect.stringMatching(/^製作者：製作者/),
+        expect.stringMatching(/^持有者：無/)
+      ])
+    );
     expect(ctx.c.action).toBe(4);
     expect(ctx.queueEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -88,6 +97,7 @@ describe('crafting commands', () => {
       Math.random = originalRandom;
     }
     expect(refreshLogs[0]).toContain('製作者製作了');
+    expect(refreshLogs).toEqual(expect.arrayContaining(['製作成功！']));
     const refreshed = await db.findActiveItemByNameNorm('測試用道具'.normalize('NFKC').toLowerCase());
     expect(refreshed).toBeTruthy();
     expect(refreshed.prefix).not.toBe('brave');
@@ -103,7 +113,7 @@ describe('crafting commands', () => {
       inventory: [],
       position: { x: 0, y: 0, z: 0 }
     };
-    ctxOther.users.push({ character: ctxOther.c });
+    ctxOther.users.push({ username: ctxOther.c.accountId, character: ctxOther.c });
     const logs = [];
 
     await db.withTx(async client => {
@@ -129,7 +139,7 @@ describe('crafting commands', () => {
       inventory: [item],
       position: { x: 0, y: 0, z: 0 }
     };
-    ctxDelete.users.push({ character: ctxDelete.c });
+    ctxDelete.users.push({ username: ctxDelete.c.accountId, character: ctxDelete.c });
     const deleteLogs = [];
     await db.withTx(async client => {
       ctxDelete.dbClient = client;
@@ -156,6 +166,7 @@ describe('crafting commands', () => {
       Math.random = originalRandom;
     }
     expect(logsAfter[0]).toContain('其他人製作了');
+    expect(logsAfter).toEqual(expect.arrayContaining(['製作成功！']));
   });
 
   test('inspect shows item details', async () => {
@@ -170,8 +181,8 @@ describe('crafting commands', () => {
       inventory: [],
       position: { x: 0, y: 0, z: 0 }
     };
-    ctx.users.push({ character: ctx.c });
-    ctx.users.push({ character: { accountId: item.makerId, name: '其他人' } });
+    ctx.users.push({ username: ctx.c.accountId, character: ctx.c });
+    ctx.users.push({ username: item.makerId, character: { accountId: item.makerId, name: '其他人' } });
     const logs = [];
     await db.withTx(async client => {
       ctx.dbClient = client;

@@ -284,7 +284,7 @@ describe('combat command', () => {
         ]
       },
       users: [],
-      worldMap: { '0,0,0': { owner: 'Hero', monsters: [defender] } },
+      worldMap: { '0,0,0': { owner: 'Enemy', monsters: [defender] } },
       handleDeath: jest.fn(),
       fmt: n => n,
       saveMap: jest.fn().mockResolvedValue(),

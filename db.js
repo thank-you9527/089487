@@ -262,6 +262,9 @@ async function withPlayersTx(ids, fn) {
     throw new Error('withPlayersTx requires at least one player id');
   }
   const uniqueIds = Array.from(new Set(ids.filter(Boolean))).sort();
+  if (IS_PG_MEM) {
+    return withTx(fn);
+  }
   const client = await pool.connect();
   const locks = [];
   try {
