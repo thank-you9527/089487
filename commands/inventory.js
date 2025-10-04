@@ -1,3 +1,5 @@
+const { getPrefixLabel } = require('../lib/itemPrefixes');
+
 module.exports = {
   handlers: {
     '查看家當': (ctx, logs) => {
@@ -13,8 +15,9 @@ module.exports = {
       } else {
         const lines = [`${ctx.c.name}的所有家當！`];
         items.forEach((it, i) => {
-          const prefix = typeof it.prefix === 'string' && it.prefix ? `${it.prefix} ` : '';
-          const display = `${prefix}${it.name || '未命名'}`;
+          const prefixKey = typeof it.prefix === 'string' ? it.prefix : '';
+          const label = prefixKey ? `${getPrefixLabel(prefixKey)}` : '';
+          const display = `${label ? `${label}` : ''}${it.name || '未命名'}`;
           lines.push(`${i + 1}.${display} Lv.${fmt(it.level || 0)}`);
         });
         logs.push(lines.join('\n'));

@@ -1,4 +1,5 @@
--- schema.sql (建議版)
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- 玩家權威狀態
 CREATE TABLE IF NOT EXISTS players (
@@ -54,6 +55,20 @@ CREATE TABLE IF NOT EXISTS sessions (
   CONSTRAINT one_active_session UNIQUE (account_id)
 );
 
+CREATE TABLE IF NOT EXISTS items (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  base_name      TEXT NOT NULL,
+  base_name_norm TEXT NOT NULL,
+  prefix         TEXT NOT NULL,
+  level          INT  NOT NULL,
+  maker_id       TEXT NOT NULL REFERENCES accounts(id),
+  owner_id       TEXT REFERENCES accounts(id),
+  effects        JSONB NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at     TIMESTAMPTZ
+);
+
 -- 帳號表
 CREATE TABLE IF NOT EXISTS accounts (
   id            TEXT PRIMARY KEY,
@@ -68,3 +83,8 @@ CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
 CREATE INDEX IF NOT EXISTS idx_players_pos  ON players(x,y,z);
 CREATE INDEX IF NOT EXISTS idx_events_player ON events(player_id, is_read, id DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_items_base_name_active
+  ON items(base_name_norm)
+  WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_items_owner ON items(owner_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_items_maker ON items(maker_id);

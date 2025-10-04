@@ -5,6 +5,14 @@ const bcrypt = require('bcrypt');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const { addItemToInventory } = require('./lib/inventory');
+const { canonicalize, validateItemBaseName } = require('./lib/names');
+const {
+  pickRandomPrefix,
+  resolvePrefix,
+  formatEffectsSummary,
+  buildItem,
+  getPrefixLabel
+} = require('./lib/itemPrefixes');
 
 function assertEnvOrExit() {
   const missing = [];
@@ -201,7 +209,7 @@ const mapPath = path.join(__dirname, 'data', 'map.json');
 let worldMap = {};
 let mapWriteLock = Promise.resolve();
 
-const normalizeName = value => (typeof value === 'string' ? value.trim().toLowerCase() : '');
+const normalizeName = canonicalize;
 
 function forEachMonster(callback) {
   if (typeof callback !== 'function') return;
@@ -227,8 +235,21 @@ function findMonstersByNormalizedName(name) {
   return matches;
 }
 
-function isMonsterNameTaken(name) {
-  return findMonstersByNormalizedName(name).length > 0;
+async function isItemNameTaken(name, client) {
+  const canonical = canonicalize(name);
+  if (!canonical) return false;
+  const item = await db.findActiveItemByNameNorm(canonical, client);
+  return !!item;
+}
+
+async function isAnyNameTaken(name, options = {}) {
+  const canonical = canonicalize(name);
+  if (!canonical) return false;
+  if (findMonstersByNormalizedName(name).length > 0) return true;
+  const players = await db.findPlayersByNameInsensitive(name, options.client);
+  if (players.length > 0) return true;
+  const item = await db.findActiveItemByNameNorm(canonical, options.client);
+  return !!item;
 }
 
 function scheduleMapWrite(task) {
@@ -599,7 +620,7 @@ function monsterDrop(mon, c, loc, logs, options = {}) {
 }
 
 async function pickupItems(c, options = {}) {
-  const { queueEvent, logs } = options;
+  const { queueEvent, logs, dbClient } = options;
   const key = `${c.position.x},${c.position.y},${c.position.z}`;
   const loc = worldMap[key];
   if (!loc || !Array.isArray(loc.items)) return;
@@ -611,6 +632,12 @@ async function pickupItems(c, options = {}) {
         { name: item.name, level: item.level, prefix: item.prefix, id: item.id },
         { queueEvent }
       );
+      if (item.id) {
+        await db.setItemOwner(item.id, c.accountId, dbClient);
+      }
+      if (result.dropped?.id) {
+        await db.setItemOwner(result.dropped.id, null, dbClient);
+      }
       if (result.dropped && Array.isArray(logs)) {
         const droppedName = result.dropped.name || '一件道具';
         logs.push(`背包太滿，${droppedName}被系統丟棄。`);
@@ -641,11 +668,14 @@ function reviveMonsters() {
   if (changed) saveMap();
 }
 
-async function handleDeath(c, logs, markDirty, queueEvent) {
+async function handleDeath(c, logs, markDirty, queueEvent, dbClient) {
   const deathPos = { ...c.position };
   if (c.inventory && c.inventory.length > 0 && Math.random() < 0.5) {
     const idx = Math.floor(Math.random() * c.inventory.length);
     const item = c.inventory.splice(idx, 1)[0];
+    if (item?.id) {
+      await db.setItemOwner(item.id, null, dbClient);
+    }
     const key = `${deathPos.x},${deathPos.y},${deathPos.z}`;
     const loc = worldMap[key] || {};
     loc.items = loc.items || [];
@@ -662,7 +692,7 @@ async function handleDeath(c, logs, markDirty, queueEvent) {
   c.lastActionUpdate = now;
   c.status = '鼠了';
   logs.push(`${c.name}死亡並在(${c.position.x},${c.position.y},${c.position.z})復活`);
-  await pickupItems(c, { queueEvent, logs });
+  await pickupItems(c, { queueEvent, logs, dbClient });
   if (typeof markDirty === 'function') markDirty(c.accountId);
 }
 
@@ -692,11 +722,7 @@ app.post('/api/register', async (req, res) => {
   }
   captchas.delete(captchaId);
   try {
-    if (isMonsterNameTaken(username)) {
-      return res.status(400).json({ error: 'username-taken' });
-    }
-    const nameConflicts = await db.findPlayersByNameInsensitive(username);
-    if (Array.isArray(nameConflicts) && nameConflicts.length > 0) {
+    if (await isAnyNameTaken(username)) {
       return res.status(400).json({ error: 'username-taken' });
     }
     const existing = await db.findAccountByUsername(username);
@@ -885,7 +911,7 @@ app.post('/api/character', auth, ensureActiveSession, RATE_LIMITER, async (req, 
   if (name === req.username) {
     return res.status(400).json({ error: 'name cannot equal username' });
   }
-  if (isMonsterNameTaken(name)) {
+  if (await isAnyNameTaken(name)) {
     return res.status(400).json({ error: 'name taken' });
   }
   try {
@@ -1060,6 +1086,15 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         playersByName.get(keyName).push(hydrated);
       }
 
+      const ownerIds = rows.map(row => row.id);
+      const itemsByOwner = await db.listActiveItemsByOwners(ownerIds, client);
+      for (const row of rows) {
+        const hydrated = playersMap.get(row.id);
+        if (hydrated) {
+          hydrated.inventory = itemsByOwner.get(row.id) || [];
+        }
+      }
+
       const c = playersMap.get(req.user.id);
       if (!c) {
         return { status: 400, body: { error: 'character not found' } };
@@ -1073,7 +1108,7 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         }
       };
 
-      await pickupItems(c, { queueEvent: queueEventFn });
+      await pickupItems(c, { queueEvent: queueEventFn, dbClient: client });
 
       if (c.status === '鼠了' && c.hp > 0) c.status = '醒著';
       if (c.status === '眼睛閉著' && trimmed !== '歐歐睏') c.status = '醒著';
@@ -1103,11 +1138,12 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         findCharactersByName: name => findCharactersByNameIn(playersMap.values(), name),
         findMonsterByName,
         listMonstersByName: findMonstersByNormalizedName,
-        isMonsterNameTaken,
+        isAnyNameTaken: name => isAnyNameTaken(name, { client }),
+        isMonsterNameTaken: name => isAnyNameTaken(name, { client }),
         handleDeath: async (target, ctxLogs) =>
-          handleDeath(target, ctxLogs, markPlayerDirty, queueEventFn),
+          handleDeath(target, ctxLogs, markPlayerDirty, queueEventFn, client),
         pickupItems: (character, options = {}) =>
-          pickupItems(character, { ...options, queueEvent: queueEventFn }),
+          pickupItems(character, { ...options, queueEvent: queueEventFn, dbClient: client }),
         attackAtLevel,
         hpAtLevel,
         expGainForLevel,

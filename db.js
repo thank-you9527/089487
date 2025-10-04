@@ -15,8 +15,10 @@ if (!connectionString) {
   throw new Error('DATABASE_URL environment variable is required');
 }
 
+const IS_PG_MEM = connectionString.startsWith('pg-mem://');
+
 let pool;
-if (connectionString.startsWith('pg-mem://')) {
+if (IS_PG_MEM) {
   const { newDb } = require('pg-mem');
   const mem = newDb();
   const adapter = mem.adapters.createPg();
@@ -102,9 +104,51 @@ const toSnake = obj => {
   return o;
 };
 
+const itemFieldMap = {
+  base_name: 'baseName',
+  base_name_norm: 'baseNameNorm',
+  maker_id: 'makerId',
+  owner_id: 'ownerId',
+  created_at: 'createdAt',
+  updated_at: 'updatedAt',
+  deleted_at: 'deletedAt'
+};
+
+function toCamelItem(row) {
+  if (!row) return null;
+  const result = { id: row.id, prefix: row.prefix, level: row.level, name: row.base_name };
+  for (const key in row) {
+    if (key in itemFieldMap) {
+      result[itemFieldMap[key]] = row[key];
+    }
+  }
+  if (row.effects && typeof row.effects === 'object') {
+    result.effects = row.effects;
+  } else if (typeof row.effects === 'string') {
+    try {
+      result.effects = JSON.parse(row.effects);
+    } catch {
+      result.effects = {};
+    }
+  } else {
+    result.effects = {};
+  }
+  return result;
+}
+
 const exec = client => client || pool;
 
 async function init() {
+  if (!IS_PG_MEM) {
+    try {
+      await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+    } catch (err) {
+      if (err && err.code !== '42501' && err.code !== '42704') {
+        console.warn('Failed to ensure pgcrypto extension', err.message);
+      }
+    }
+  }
+  const itemIdDefault = IS_PG_MEM ? '' : ' DEFAULT gen_random_uuid()';
   const ddl = `
   CREATE TABLE IF NOT EXISTS accounts (
     id            TEXT PRIMARY KEY,
@@ -160,11 +204,29 @@ async function init() {
     ip          TEXT,
     CONSTRAINT one_active_session UNIQUE (account_id)
   );
+  CREATE TABLE IF NOT EXISTS items (
+    id             UUID PRIMARY KEY${itemIdDefault},
+    base_name      TEXT NOT NULL,
+    base_name_norm TEXT NOT NULL,
+    prefix         TEXT NOT NULL,
+    level          INT  NOT NULL,
+    maker_id       TEXT NOT NULL REFERENCES accounts(id),
+    owner_id       TEXT REFERENCES accounts(id),
+    effects        JSONB NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at     TIMESTAMPTZ
+  );
   CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
   CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
   CREATE INDEX IF NOT EXISTS idx_players_pos ON players(x, y, z);
   CREATE INDEX IF NOT EXISTS idx_events_player ON events(player_id, is_read, id DESC);
   CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_items_base_name_active
+    ON items(base_name_norm)
+    WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_items_owner ON items(owner_id) WHERE deleted_at IS NULL;
+  CREATE INDEX IF NOT EXISTS idx_items_maker ON items(maker_id);
   `;
   await pool.query(ddl);
 }
@@ -450,6 +512,135 @@ async function cleanupStaleSessions(client) {
   return rowCount;
 }
 
+async function createItem(record, client) {
+  const runner = exec(client);
+  const id = record.id || randomUUID();
+  const { rows } = await runner.query(
+    `INSERT INTO items(id, base_name, base_name_norm, prefix, level, maker_id, owner_id, effects)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+     RETURNING *`,
+    [
+      id,
+      record.baseName,
+      record.baseNameNorm,
+      record.prefix,
+      record.level,
+      record.makerId,
+      record.ownerId || null,
+      record.effects || {}
+    ]
+  );
+  return toCamelItem(rows[0]);
+}
+
+async function updateItem(id, patch, client) {
+  const runner = exec(client);
+  const entries = Object.entries(patch).filter(([key, value]) => value !== undefined);
+  if (entries.length === 0) {
+    const { rows } = await runner.query('SELECT * FROM items WHERE id=$1', [id]);
+    return rows.length ? toCamelItem(rows[0]) : null;
+  }
+  const sets = [];
+  const values = [];
+  let idx = 1;
+  for (const [key, value] of entries) {
+    let column = key;
+    if (key === 'baseName') column = 'base_name';
+    else if (key === 'baseNameNorm') column = 'base_name_norm';
+    else if (key === 'makerId') column = 'maker_id';
+    else if (key === 'ownerId') column = 'owner_id';
+    sets.push(`${column}=$${idx}`);
+    values.push(value);
+    idx += 1;
+  }
+  sets.push(`updated_at=now()`);
+  values.push(id);
+  const sql = `UPDATE items SET ${sets.join(', ')} WHERE id=$${idx} RETURNING *`;
+  const { rows } = await runner.query(sql, values);
+  return rows.length ? toCamelItem(rows[0]) : null;
+}
+
+async function softDeleteItem(id, client) {
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    'UPDATE items SET deleted_at=now(), owner_id=NULL, updated_at=now() WHERE id=$1 RETURNING *',
+    [id]
+  );
+  return rows.length ? toCamelItem(rows[0]) : null;
+}
+
+async function findActiveItemByNameNorm(nameNorm, client) {
+  if (!nameNorm) return null;
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    'SELECT * FROM items WHERE base_name_norm=$1 AND deleted_at IS NULL LIMIT 1',
+    [nameNorm]
+  );
+  return rows.length ? toCamelItem(rows[0]) : null;
+}
+
+async function findActiveItemByPrefixAndName(prefix, nameNorm, client) {
+  if (!prefix || !nameNorm) return null;
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    'SELECT * FROM items WHERE prefix=$1 AND base_name_norm=$2 AND deleted_at IS NULL LIMIT 1',
+    [prefix, nameNorm]
+  );
+  return rows.length ? toCamelItem(rows[0]) : null;
+}
+
+async function listActiveItemsByOwner(ownerId, client) {
+  if (!ownerId) return [];
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    'SELECT * FROM items WHERE owner_id=$1 AND deleted_at IS NULL ORDER BY updated_at DESC',
+    [ownerId]
+  );
+  return rows.map(toCamelItem);
+}
+
+async function listActiveItemsByOwners(ownerIds, client) {
+  if (!Array.isArray(ownerIds) || ownerIds.length === 0) return new Map();
+  const runner = exec(client);
+  const uniqueIds = Array.from(new Set(ownerIds.filter(Boolean)));
+  if (uniqueIds.length === 0) return new Map();
+  const { rows } = await runner.query(
+    'SELECT * FROM items WHERE owner_id = ANY($1::text[]) AND deleted_at IS NULL',
+    [uniqueIds]
+  );
+  const map = new Map();
+  for (const row of rows) {
+    const camel = toCamelItem(row);
+    if (!map.has(camel.ownerId)) map.set(camel.ownerId, []);
+    map.get(camel.ownerId).push(camel);
+  }
+  return map;
+}
+
+async function setItemOwner(id, ownerId, client) {
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    'UPDATE items SET owner_id=$2, updated_at=now() WHERE id=$1 RETURNING *',
+    [id, ownerId]
+  );
+  return rows.length ? toCamelItem(rows[0]) : null;
+}
+
+async function withItemNameLock(nameNorm, fn, client) {
+  if (!nameNorm) return fn();
+  if (IS_PG_MEM) {
+    return fn();
+  }
+  const runner = exec(client);
+  const [k1, k2] = lockKeysFor(`item:${nameNorm}`);
+  await runner.query('SELECT pg_advisory_lock($1,$2)', [k1, k2]);
+  try {
+    return await fn();
+  } finally {
+    await runner.query('SELECT pg_advisory_unlock($1,$2)', [k1, k2]);
+  }
+}
+
 module.exports = {
   init,
   withTx,
@@ -478,5 +669,14 @@ module.exports = {
   deleteSession,
   touchSession,
   cleanupStaleSessions,
+  createItem,
+  updateItem,
+  softDeleteItem,
+  findActiveItemByNameNorm,
+  findActiveItemByPrefixAndName,
+  listActiveItemsByOwner,
+  listActiveItemsByOwners,
+  setItemOwner,
+  withItemNameLock,
   _pool: pool
 };

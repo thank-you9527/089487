@@ -39,7 +39,7 @@ Features:
 - Character attributes use logistic growth (K=0.0046, center=2500) so level 1 stats start near their base values while level 5000 approaches the caps. Action points grow linearly from 100 to 300 by level 300 and remain there afterward.
 - Regions may randomly gain a return marker (5% chance on capture) that allows binding a respawn point via the `歐歐睏` command, placing the player into a resting state.
 - Player health regenerates over time and death causes respawn with a chance to drop an inventory item.
-- Simple inventory with up to 20 items and commands to inspect contents.
+- Inventory slots cap at 10 items; excess pickups auto-discard the lowest-level piece and emit an `auto_drop` event.
 
 Logs are stored in `localStorage` for demonstration purposes only.
 
@@ -51,5 +51,8 @@ Logs are stored in `localStorage` for demonstration purposes only.
 - `佔領/地名` – name and capture an unowned area.
 - `孵化/怪物名稱` – create a monster in your territory.
 - `歐歐睏` – bind your soul to a return marker for respawn and enter a resting state.
-- `查看家當` / `查看家當/道具名稱` – inspect your inventory or a specific item.
+- `查看家當` – list the items in your pack.
+- `捏捏/道具名稱` – craft or refresh an item you originally created.
+- `蛋雕/道具名稱` – delete an item from your pack (soft delete) to free the name.
+- `讓我看看/前綴+道具名稱` – inspect any crafted item’s details, regardless of owner.
 - `歐拉` / `歐拉/怪物名稱` – attack random or specified targets.

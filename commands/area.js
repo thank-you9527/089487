@@ -108,7 +108,7 @@ module.exports = {
         ctx.c.lastActionUpdate = Date.now();
         const key = `${ctx.c.position.x},${ctx.c.position.y},${ctx.c.position.z}`;
         const loc = ctx.worldMap[key];
-        const monsterTaken = ctx.isMonsterNameTaken(mName);
+        const monsterTaken = await ctx.isMonsterNameTaken(mName);
         const playerTaken = ctx.listPlayersByName(mName).length > 0;
         if (
           !mName ||

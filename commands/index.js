@@ -4,8 +4,9 @@ const info = require('./info');
 const area = require('./area');
 const inventory = require('./inventory');
 const combat = require('./combat');
+const crafting = require('./crafting');
 
-const modules = [movement, info, area, inventory, combat];
+const modules = [movement, info, area, inventory, combat, crafting];
 const commandModules = [attack];
 
 const handlers = {};
