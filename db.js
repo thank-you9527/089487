@@ -393,7 +393,10 @@ async function findAccountByUsername(username) {
   const canonical = canonicalize(username);
   if (!canonical) return null;
   const { rows } = await pool.query(
-    'SELECT id, username, username_norm, password_hash, created_at FROM accounts WHERE username_norm=$1',
+    `SELECT id, username, username_norm, password_hash, created_at
+       FROM accounts
+      WHERE username_norm = $1 OR lower(username) = $1
+      LIMIT 1`,
     [canonical]
   );
   if (rows.length === 0) return null;
@@ -516,13 +519,11 @@ async function createSession(accountId, meta = {}) {
       throw err;
     }
     const sessionId = randomUUID();
-    const ttlMs = Math.max(1, Math.floor(SESSION_TTL_MS));
-    const expiresAt = new Date(Date.now() + ttlMs);
     try {
       await runner.query(
         `INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip)
-         VALUES($1,$2,now(),now(),$3,$4,$5)`,
-        [sessionId, accountId, expiresAt, meta.userAgent || null, meta.ip || null]
+         VALUES($1,$2,now(),now(), now() + $3 * interval '1 millisecond', $4,$5)`,
+        [sessionId, accountId, Math.max(1, Math.floor(SESSION_TTL_MS)), meta.userAgent || null, meta.ip || null]
       );
     } catch (err) {
       if (err.code === '23505') {
@@ -532,6 +533,7 @@ async function createSession(accountId, meta = {}) {
       }
       throw err;
     }
+    const expiresAt = new Date(Date.now() + Math.max(1, Math.floor(SESSION_TTL_MS)));
     return { sessionId, expiresAt };
   });
 }
@@ -541,13 +543,12 @@ async function replaceSession(accountId, meta = {}) {
     const runner = exec(client);
     await runner.query('DELETE FROM sessions WHERE account_id=$1', [accountId]);
     const sessionId = randomUUID();
-    const ttlMs = Math.max(1, Math.floor(SESSION_TTL_MS));
-    const expiresAt = new Date(Date.now() + ttlMs);
     await runner.query(
       `INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip)
-       VALUES($1,$2,now(),now(),$3,$4,$5)`,
-      [sessionId, accountId, expiresAt, meta.userAgent || null, meta.ip || null]
+       VALUES($1,$2,now(),now(), now() + $3 * interval '1 millisecond', $4,$5)`,
+      [sessionId, accountId, Math.max(1, Math.floor(SESSION_TTL_MS)), meta.userAgent || null, meta.ip || null]
     );
+    const expiresAt = new Date(Date.now() + Math.max(1, Math.floor(SESSION_TTL_MS)));
     return { sessionId, expiresAt };
   });
 }
@@ -566,14 +567,13 @@ async function deleteSession(sessionId) {
 
 async function touchSession(sessionId) {
   if (!sessionId) return false;
-  let extensionSeconds = Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000);
-  if (extensionSeconds <= 0) extensionSeconds = 30 * 60;
-  const newExpiry = new Date(Date.now() + extensionSeconds * 1000);
+  let extensionMs = Math.max(0, Math.floor(SESSION_IDLE_TIMEOUT_MS));
+  if (extensionMs <= 0) extensionMs = 30 * 60 * 1000;
   const { rowCount } = await pool.query(
     `UPDATE sessions
-     SET last_seen=now(), expires_at=$2
+     SET last_seen=now(), expires_at=now() + $2 * interval '1 millisecond'
      WHERE session_id=$1 AND expires_at > now()`,
-    [sessionId, newExpiry]
+    [sessionId, extensionMs]
   );
   return rowCount > 0;
 }
