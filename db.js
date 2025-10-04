@@ -5,10 +5,14 @@
 const { Pool } = require('pg');
 const { randomUUID, createHash } = require('crypto');
 
-const SESSION_TTL_HOURS = Math.max(1, Number(process.env.SESSION_TTL_HOURS ?? 24));
-const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Number(process.env.SESSION_IDLE_TIMEOUT_SEC ?? 600));
+const DEFAULT_SESSION_TTL_HOURS = 24 * 7; // 7 days
+const SESSION_TTL_HOURS = Math.max(1, Number(process.env.SESSION_TTL_HOURS ?? DEFAULT_SESSION_TTL_HOURS));
 const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
+
+const DEFAULT_IDLE_TIMEOUT_SEC = 30 * 60; // 30 minutes
+const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Number(process.env.SESSION_IDLE_TIMEOUT_SEC ?? DEFAULT_IDLE_TIMEOUT_SEC));
 const SESSION_IDLE_TIMEOUT_MS = SESSION_IDLE_TIMEOUT_SEC * 1000;
+const SESSION_TOUCH_EXTENSION_MS = SESSION_IDLE_TIMEOUT_MS || (30 * 60 * 1000);
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -444,19 +448,25 @@ async function markEventsRead(playerId, upToId, client) {
   return true;
 }
 
-function sessionExpiration(meta = {}) {
+function sessionCreationExpiration(meta = {}) {
   if (meta.expiresAt) return new Date(meta.expiresAt);
   return new Date(Date.now() + SESSION_TTL_MS);
+}
+
+function sessionTouchExpiration() {
+  return new Date(Date.now() + SESSION_TOUCH_EXTENSION_MS);
 }
 
 async function createSession(accountId, meta = {}) {
   if (!accountId) throw new Error('accountId required');
   const sessionId = randomUUID();
-  const expiresAt = sessionExpiration(meta);
+  const issuedAt = new Date();
+  const lastSeen = issuedAt;
+  const expiresAt = sessionCreationExpiration(meta);
   try {
     await pool.query(
-      'INSERT INTO sessions(session_id, account_id, expires_at, user_agent, ip) VALUES($1,$2,$3,$4,$5)',
-      [sessionId, accountId, expiresAt, meta.userAgent || null, meta.ip || null]
+      'INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip) VALUES($1,$2,$3,$4,$5,$6,$7)',
+      [sessionId, accountId, issuedAt, lastSeen, expiresAt, meta.userAgent || null, meta.ip || null]
     );
     return { sessionId, expiresAt };
   } catch (err) {
@@ -473,10 +483,12 @@ async function replaceSession(accountId, meta = {}) {
   return withTx(async client => {
     await client.query('DELETE FROM sessions WHERE account_id=$1', [accountId]);
     const sessionId = randomUUID();
-    const expiresAt = sessionExpiration(meta);
+    const issuedAt = new Date();
+    const lastSeen = issuedAt;
+    const expiresAt = sessionCreationExpiration(meta);
     await client.query(
-      'INSERT INTO sessions(session_id, account_id, expires_at, user_agent, ip) VALUES($1,$2,$3,$4,$5)',
-      [sessionId, accountId, expiresAt, meta.userAgent || null, meta.ip || null]
+      'INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip) VALUES($1,$2,$3,$4,$5,$6,$7)',
+      [sessionId, accountId, issuedAt, lastSeen, expiresAt, meta.userAgent || null, meta.ip || null]
     );
     return { sessionId, expiresAt };
   });
@@ -495,12 +507,13 @@ async function deleteSession(sessionId) {
 }
 
 async function touchSession(sessionId) {
-  if (!sessionId) return;
-  const expiresAt = sessionExpiration();
-  await pool.query(
-    'UPDATE sessions SET last_seen=now(), expires_at=$2 WHERE session_id=$1',
+  if (!sessionId) return false;
+  const expiresAt = sessionTouchExpiration();
+  const { rowCount } = await pool.query(
+    'UPDATE sessions SET last_seen=now(), expires_at=$2 WHERE session_id=$1 AND expires_at > now()',
     [sessionId, expiresAt]
   );
+  return rowCount > 0;
 }
 
 async function cleanupStaleSessions(client) {

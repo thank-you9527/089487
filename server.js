@@ -501,7 +501,12 @@ async function ensureActiveSession(req, res, next) {
       clearAuthCookie(res);
       return res.status(401).json({ error: 'session-expired' });
     }
-    await db.touchSession(session.session_id);
+    const touched = await db.touchSession(session.session_id);
+    if (!touched) {
+      await db.deleteSession(session.session_id);
+      clearAuthCookie(res);
+      return res.status(401).json({ error: 'session-expired' });
+    }
     return next();
   } catch (err) {
     console.error('ensureActiveSession failed', err);
