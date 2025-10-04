@@ -496,7 +496,8 @@ async function ensureActiveSession(req, res, next) {
     return next();
   } catch (err) {
     console.error('ensureActiveSession failed', err);
-    return res.status(500).json({ error: 'internal error' });
+    clearAuthCookie(res);
+    return res.status(401).json({ error: 'unauthorized' });
   }
 }
 
@@ -716,7 +717,15 @@ app.post('/api/register', async (req, res) => {
     if (await isAnyNameTaken(username)) {
       return res.status(400).json({ error: 'username-taken' });
     }
-    const existing = await db.findAccountByUsername(username);
+    let existing = null;
+    try {
+      existing = await db.findAccountByUsername(username);
+    } catch (err) {
+      if (err && err.code === 'CANONICAL_COLLISION') {
+        return res.status(400).json({ error: 'username-taken' });
+      }
+      throw err;
+    }
     if (existing) {
       return res.status(400).json({ error: 'username-taken' });
     }
@@ -735,7 +744,15 @@ app.post('/api/register', async (req, res) => {
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
   try {
-    const account = await db.findAccountByUsername(username);
+    let account = null;
+    try {
+      account = await db.findAccountByUsername(username);
+    } catch (err) {
+      if (err && err.code === 'CANONICAL_COLLISION') {
+        return res.status(409).json({ error: 'username-collision' });
+      }
+      throw err;
+    }
     if (!account) return res.status(401).json({ error: 'invalid credentials' });
     const ok = await bcrypt.compare(password, account.passwordHash);
     if (!ok) return res.status(401).json({ error: 'invalid credentials' });

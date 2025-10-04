@@ -395,12 +395,21 @@ async function findAccountByUsername(username) {
   const { rows } = await pool.query(
     `SELECT id, username, username_norm, password_hash, created_at
        FROM accounts
-      WHERE username_norm = $1 OR lower(username) = $1
-      LIMIT 1`,
+      WHERE username_norm = $1 OR lower(username) = $1`,
     [canonical]
   );
   if (rows.length === 0) return null;
-  return normalizeAccount(rows[0]);
+  if (rows.length === 1) {
+    return normalizeAccount(rows[0]);
+  }
+  const exact = rows.find(row => row.username === username);
+  if (exact) {
+    return normalizeAccount(exact);
+  }
+  const err = new Error('canonical username collision');
+  err.code = 'CANONICAL_COLLISION';
+  err.usernames = rows.map(row => row.username);
+  throw err;
 }
 
 async function deleteAccount(id) {
