@@ -10,7 +10,7 @@ const move = async (ctx, dx, dy, dz, cost, verb, logs) => {
     return;
   }
   c.position = newPos;
-  await pickupItems(c);
+  await pickupItems(c, { logs, queueEvent: ctx.queueEvent });
   if (cost) {
     c.action = Math.max(0, c.action - cost);
     c.lastActionUpdate = Date.now();

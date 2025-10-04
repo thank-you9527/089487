@@ -4,6 +4,7 @@ const path = require('path');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
+const { addItemToInventory } = require('./lib/inventory');
 
 function assertEnvOrExit() {
   const missing = [];
@@ -580,18 +581,7 @@ function regen(character) {
   }
 }
 
-function addItemToInventory(c, item) {
-  c.inventory = c.inventory || [];
-  c.inventory.push(item);
-  if (c.inventory.length > 20) {
-    const minLv = Math.min(...c.inventory.map(it => it.level || 0));
-    const lowest = c.inventory.filter(it => (it.level || 0) === minLv);
-    const discard = lowest[Math.floor(Math.random() * lowest.length)];
-    c.inventory.splice(c.inventory.indexOf(discard), 1);
-  }
-}
-
-function monsterDrop(mon, c, loc, logs) {
+function monsterDrop(mon, c, loc, logs, options = {}) {
   c.gold = c.gold || 0;
   if (itemsDB.length === 0 || Math.random() < 0.15) {
     const gold = mon.level * 10 + Math.floor(Math.random() * 21) - 10;
@@ -599,19 +589,32 @@ function monsterDrop(mon, c, loc, logs) {
     logs.push(`獲得金幣${fmt(gold)}`);
   } else {
     const item = itemsDB[Math.floor(Math.random() * itemsDB.length)];
-    addItemToInventory(c, { name: item.name, level: item.level });
+    const result = addItemToInventory(c, { name: item.name, level: item.level, prefix: item.prefix }, options);
     logs.push(`獲得${item.name}`);
+    if (result.dropped) {
+      const droppedName = result.dropped.name || '一件道具';
+      logs.push(`背包太滿，${droppedName}被系統丟棄。`);
+    }
   }
 }
 
-async function pickupItems(c) {
+async function pickupItems(c, options = {}) {
+  const { queueEvent, logs } = options;
   const key = `${c.position.x},${c.position.y},${c.position.z}`;
   const loc = worldMap[key];
   if (!loc || !Array.isArray(loc.items)) return;
   const remaining = [];
   for (const item of loc.items) {
     if (item.owner === c.name) {
-      addItemToInventory(c, { name: item.name, level: item.level });
+      const result = addItemToInventory(
+        c,
+        { name: item.name, level: item.level, prefix: item.prefix, id: item.id },
+        { queueEvent }
+      );
+      if (result.dropped && Array.isArray(logs)) {
+        const droppedName = result.dropped.name || '一件道具';
+        logs.push(`背包太滿，${droppedName}被系統丟棄。`);
+      }
     } else {
       remaining.push(item);
     }
@@ -638,7 +641,7 @@ function reviveMonsters() {
   if (changed) saveMap();
 }
 
-async function handleDeath(c, logs, markDirty) {
+async function handleDeath(c, logs, markDirty, queueEvent) {
   const deathPos = { ...c.position };
   if (c.inventory && c.inventory.length > 0 && Math.random() < 0.5) {
     const idx = Math.floor(Math.random() * c.inventory.length);
@@ -659,7 +662,7 @@ async function handleDeath(c, logs, markDirty) {
   c.lastActionUpdate = now;
   c.status = '鼠了';
   logs.push(`${c.name}死亡並在(${c.position.x},${c.position.y},${c.position.z})復活`);
-  await pickupItems(c);
+  await pickupItems(c, { queueEvent, logs });
   if (typeof markDirty === 'function') markDirty(c.accountId);
 }
 
@@ -689,6 +692,13 @@ app.post('/api/register', async (req, res) => {
   }
   captchas.delete(captchaId);
   try {
+    if (isMonsterNameTaken(username)) {
+      return res.status(400).json({ error: 'username-taken' });
+    }
+    const nameConflicts = await db.findPlayersByNameInsensitive(username);
+    if (Array.isArray(nameConflicts) && nameConflicts.length > 0) {
+      return res.status(400).json({ error: 'username-taken' });
+    }
     const existing = await db.findAccountByUsername(username);
     if (existing) {
       return res.status(400).json({ error: 'username-taken' });
@@ -1057,7 +1067,13 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
 
       updateStats(c);
       regen(c);
-      await pickupItems(c);
+      const queueEventFn = entry => {
+        if (entry && entry.playerId && entry.kind) {
+          queuedEvents.push(entry);
+        }
+      };
+
+      await pickupItems(c, { queueEvent: queueEventFn });
 
       if (c.status === '鼠了' && c.hp > 0) c.status = '醒著';
       if (c.status === '眼睛閉著' && trimmed !== '歐歐睏') c.status = '醒著';
@@ -1088,23 +1104,25 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         findMonsterByName,
         listMonstersByName: findMonstersByNormalizedName,
         isMonsterNameTaken,
-        handleDeath: async (target, ctxLogs) => handleDeath(target, ctxLogs, markPlayerDirty),
-        pickupItems,
+        handleDeath: async (target, ctxLogs) =>
+          handleDeath(target, ctxLogs, markPlayerDirty, queueEventFn),
+        pickupItems: (character, options = {}) =>
+          pickupItems(character, { ...options, queueEvent: queueEventFn }),
         attackAtLevel,
         hpAtLevel,
         expGainForLevel,
         fmt,
         areaNameRegex,
         monsterNameRegex,
-        monsterDrop,
+        monsterDrop: (monster, character, loc, logList, options = {}) =>
+          monsterDrop(monster, character, loc, logList, {
+            ...options,
+            queueEvent: queueEventFn
+          }),
         dbClient: client,
         markPlayerDirty,
         currentLocationKey,
-        queueEvent: entry => {
-          if (entry && entry.playerId && entry.kind) {
-            queuedEvents.push(entry);
-          }
-        }
+        queueEvent: queueEventFn
       };
 
       await dispatchCommands(trimmed, context, logs);

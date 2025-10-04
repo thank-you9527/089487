@@ -1,4 +1,5 @@
 const combat = require('../commands/combat');
+const { aggregateItemEffects } = require('../lib/itemEffects');
 
 function stubRandom(sequence) {
   const values = Array.from(sequence);
@@ -187,5 +188,181 @@ describe('combat command', () => {
     expect(otherPlayer.hp).toBe(10);
     expect(events.filter(e => e.kind === 'friendly')).toHaveLength(1);
     expect(events.filter(e => e.kind === 'combat')).toHaveLength(2);
+  });
+
+  test('stacked brave items boost damage up to fifty percent', async () => {
+    const restoreRandom = stubRandom([0.9, 0.1, 0.0, 0.0, 0.99, 0.99]);
+    const defender = {
+      accountId: 'defender',
+      name: 'Visitor',
+      action: 50,
+      maxAction: 50,
+      position: { x: 0, y: 0, z: 0 },
+      morality: 30,
+      level: 8,
+      attack: 4,
+      hp: 40,
+      maxHp: 40,
+      dodge: 0,
+      inventory: []
+    };
+    const logs = [];
+    const events = [];
+    const ctx = {
+      c: {
+        accountId: 'attacker',
+        name: 'Hero',
+        action: 20,
+        maxAction: 30,
+        position: { x: 0, y: 0, z: 0 },
+        morality: 40,
+        level: 12,
+        attack: 10,
+        hp: 30,
+        maxHp: 30,
+        inventory: [
+          { prefix: 'brave', level: 500 },
+          { prefix: 'brave', level: 450 },
+          { prefix: 'brave', level: 400 }
+        ]
+      },
+      users: [{ character: defender }],
+      worldMap: { '0,0,0': { owner: 'Hero', monsters: [] } },
+      handleDeath: jest.fn(),
+      fmt: n => n,
+      saveMap: jest.fn().mockResolvedValue(),
+      monsterDrop: jest.fn(),
+      markPlayerDirty: jest.fn(),
+      queueEvent: entry => events.push(entry)
+    };
+    ctx.listPlayersByName = name =>
+      name.toLowerCase() === 'visitor' ? [defender] : [];
+
+    try {
+      await combat.prefixHandlers[0].handler('歐拉/Visitor', ctx, logs);
+    } finally {
+      restoreRandom();
+    }
+
+    expect(defender.hp).toBe(25);
+    const combatEvent = events.find(e => e.kind === 'combat' && e.playerId === 'attacker');
+    expect(combatEvent.payload.damage).toBe(15);
+    expect(combatEvent.payload.crit).toBe(false);
+  });
+
+  test('lifesteal heals attacker based on damage dealt', async () => {
+    const restoreRandom = stubRandom([0.9, 0.2, 0.1, 0.0, 0.99, 0.99]);
+    const defender = {
+      accountId: null,
+      name: 'Slime',
+      action: 0,
+      position: { x: 0, y: 0, z: 0 },
+      morality: 0,
+      level: 5,
+      attack: 4,
+      hp: 120,
+      maxHp: 120,
+      dodge: 0
+    };
+    const logs = [];
+    const events = [];
+    const ctx = {
+      c: {
+        accountId: 'attacker',
+        name: 'Hero',
+        action: 20,
+        maxAction: 30,
+        position: { x: 0, y: 0, z: 0 },
+        morality: 40,
+        level: 12,
+        attack: 40,
+        hp: 50,
+        maxHp: 100,
+        inventory: [
+          { prefix: 'leech', level: 300 },
+          { prefix: 'leech', level: 200 }
+        ]
+      },
+      users: [],
+      worldMap: { '0,0,0': { owner: 'Hero', monsters: [defender] } },
+      handleDeath: jest.fn(),
+      fmt: n => n,
+      saveMap: jest.fn().mockResolvedValue(),
+      monsterDrop: jest.fn(),
+      markPlayerDirty: jest.fn(),
+      queueEvent: entry => events.push(entry)
+    };
+    ctx.listPlayersByName = () => [];
+
+    const effects = aggregateItemEffects(ctx.c.inventory);
+    const expectedHeal = Math.round(40 * Math.min(0.3, effects.lifesteal_pct_total));
+
+    try {
+      await combat.prefixHandlers[0].handler('歐拉/Slime', ctx, logs);
+    } finally {
+      restoreRandom();
+    }
+
+    expect(ctx.c.hp).toBe(50 + expectedHeal);
+    const combatEvent = events.find(e => e.kind === 'combat' && e.playerId === 'attacker');
+    expect(combatEvent.payload.lifesteal).toBe(expectedHeal);
+  });
+
+  test('dodge prefix increases defender dodge chance', async () => {
+    const restoreRandom = stubRandom([0.9, 0.2, 0.1, 0.0, 0.05]);
+    const defender = {
+      accountId: 'defender',
+      name: 'Visitor',
+      action: 20,
+      maxAction: 20,
+      position: { x: 0, y: 0, z: 0 },
+      morality: 30,
+      level: 8,
+      attack: 4,
+      hp: 30,
+      maxHp: 30,
+      dodge: 5,
+      inventory: [
+        { prefix: 'dodge', level: 500 },
+        { prefix: 'dodge', level: 400 }
+      ]
+    };
+    const logs = [];
+    const events = [];
+    const ctx = {
+      c: {
+        accountId: 'attacker',
+        name: 'Hero',
+        action: 20,
+        maxAction: 30,
+        position: { x: 0, y: 0, z: 0 },
+        morality: 40,
+        level: 12,
+        attack: 10,
+        hp: 30,
+        maxHp: 30,
+        inventory: []
+      },
+      users: [{ character: defender }],
+      worldMap: { '0,0,0': { owner: 'Hero', monsters: [] } },
+      handleDeath: jest.fn(),
+      fmt: n => n,
+      saveMap: jest.fn().mockResolvedValue(),
+      monsterDrop: jest.fn(),
+      markPlayerDirty: jest.fn(),
+      queueEvent: entry => events.push(entry)
+    };
+    ctx.listPlayersByName = name =>
+      name.toLowerCase() === 'visitor' ? [defender] : [];
+
+    try {
+      await combat.prefixHandlers[0].handler('歐拉/Visitor', ctx, logs);
+    } finally {
+      restoreRandom();
+    }
+
+    expect(defender.hp).toBe(30);
+    const attackerEvent = events.find(e => e.kind === 'combat' && e.playerId === 'attacker');
+    expect(attackerEvent.payload.hit).toBe(false);
   });
 });

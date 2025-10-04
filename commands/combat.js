@@ -1,4 +1,5 @@
 const { runAttack, runFriendlyOnly } = require('./attack');
+const { aggregateItemEffects } = require('../lib/itemEffects');
 
 const roundInt = value => {
   const n = Number(value);
@@ -110,11 +111,13 @@ function computeHitChance(combatant) {
 }
 
 function computeDodgeChance(defender) {
-  const dodge = typeof defender.dodge === 'number' ? defender.dodge : 0;
-  return clampInt(dodge, 0, SAFE_DODGE_MAX);
+  const base = typeof defender.dodge === 'number' ? defender.dodge : 0;
+  const bonus = defender.effects?.dodge_bonus_total || 0;
+  return clampInt(base + bonus, 0, SAFE_DODGE_MAX);
 }
 
 function createCombatantFromPlayer(player, ctx) {
+  const effects = aggregateItemEffects(player?.inventory);
   return {
     type: 'player',
     entity: player,
@@ -124,7 +127,8 @@ function createCombatantFromPlayer(player, ctx) {
     morality: typeof player.morality === 'number' ? player.morality : 0,
     dodge: typeof player.dodge === 'number' ? player.dodge : 0,
     level: typeof player.level === 'number' ? player.level : 1,
-    maxHp: getMaxHp(player, ctx)
+    maxHp: getMaxHp(player, ctx),
+    effects
   };
 }
 
@@ -140,6 +144,7 @@ function createCombatantFromMonster(monster, ctx, locationKey) {
     dodge: typeof monster.dodge === 'number' ? monster.dodge : 0,
     level: typeof monster.level === 'number' ? monster.level : 1,
     maxHp: getMaxHp(monster, ctx),
+    effects: null,
     locationKey
   };
 }
@@ -155,7 +160,9 @@ async function executeStrike(attacker, defender, ctx) {
       defenderRoll: null,
       damage: 0,
       inflicted: 0,
-      defenderDefeated: false
+      defenderDefeated: false,
+      crit: false,
+      lifesteal: 0
     };
   }
   const dodgeChance = computeDodgeChance(defender);
@@ -168,17 +175,45 @@ async function executeStrike(attacker, defender, ctx) {
       defenderRoll,
       damage: 0,
       inflicted: 0,
-      defenderDefeated: false
+      defenderDefeated: false,
+      crit: false,
+      lifesteal: 0
     };
   }
-  const rawDamage = Math.max(0, roundInt(attacker.attack));
-  const inflicted = Math.max(0, rawDamage);
+  const effects = attacker.effects || {};
+  const lifestealEffects = effects.lifesteal_pct_total || 0;
+  const critChance = effects.crit_pct_total || 0;
+  const attackBonus = effects.atk_pct_total || 0;
+
+  let attemptedDamage = Math.max(0, roundInt(attacker.attack));
+  if (attackBonus > 0) {
+    attemptedDamage = roundInt(attemptedDamage * (1 + attackBonus));
+  }
+
+  let crit = false;
+  if (critChance > 0 && Math.random() < Math.min(0.3, Math.max(0, critChance))) {
+    crit = true;
+    attemptedDamage = roundInt(attemptedDamage * 3.5);
+  }
+
+  const inflicted = Math.max(0, attemptedDamage);
   const delta = applyHpChange(defender.entity, -inflicted, ctx, {
     isPlayer: defender.type === 'player',
     markPlayerDirty: ctx.markPlayerDirty
   });
   const damageDone = Math.abs(delta);
   const defenderDefeated = defender.entity.hp <= 0;
+  let lifestealApplied = 0;
+  if (damageDone > 0 && lifestealEffects > 0) {
+    const healAmount = roundInt(damageDone * Math.min(0.3, Math.max(0, lifestealEffects)));
+    if (healAmount > 0) {
+      const healed = applyHpChange(attacker.entity, healAmount, ctx, {
+        isPlayer: attacker.type === 'player',
+        markPlayerDirty: ctx.markPlayerDirty
+      });
+      lifestealApplied = Math.max(0, healed);
+    }
+  }
   return {
     hit: true,
     dodged: false,
@@ -186,7 +221,9 @@ async function executeStrike(attacker, defender, ctx) {
     defenderRoll,
     damage: damageDone,
     inflicted: damageDone,
-    defenderDefeated
+    defenderDefeated,
+    crit,
+    lifesteal: lifestealApplied
   };
 }
 
@@ -252,6 +289,8 @@ function buildCombatEventPayload({
   damage,
   deltaHp,
   deltaSp,
+  crit,
+  lifesteal,
   view,
   messages
 }) {
@@ -265,6 +304,8 @@ function buildCombatEventPayload({
     damage: roundInt(damage || 0),
     delta_hp: roundInt(deltaHp || 0),
     delta_sp: roundInt(deltaSp || 0),
+    crit: !!crit,
+    lifesteal: roundInt(lifesteal || 0),
     view,
     messages
   };
@@ -465,30 +506,23 @@ async function attack(cmd, targeted, cost, ctx, logs) {
     const actorName = actor.name;
     const opponentName = opponent.name;
 
-    if (actor === attackerCombatant) {
-      if (strike.hit) {
-        const msg = `${actorName}成功對${opponentName}進行攻擊，造成${fmt(strike.damage)}點傷害！`;
-        logs.push(msg);
-        attackerMessages.push(msg);
-        defenderMessages.push(msg);
-      } else {
-        const missMsg = `${actorName}出招落空！`;
-        logs.push(missMsg);
-        attackerMessages.push(missMsg);
-        defenderMessages.push(missMsg);
+    if (strike.hit) {
+      let msg = `${actorName}成功對${opponentName}進行攻擊，造成${fmt(strike.damage)}點傷害！`;
+      if (strike.crit) msg += '（爆擊！）';
+      logs.push(msg);
+      attackerMessages.push(msg);
+      defenderMessages.push(msg);
+      if (strike.lifesteal > 0 && actor.type === 'player') {
+        const healMsg = `${actorName}回復了${fmt(strike.lifesteal)}點血量！`;
+        logs.push(healMsg);
+        attackerMessages.push(healMsg);
+        defenderMessages.push(healMsg);
       }
     } else {
-      if (strike.hit) {
-        const msg = `${actorName}成功對${opponentName}進行攻擊，造成${fmt(strike.damage)}點傷害！`;
-        logs.push(msg);
-        attackerMessages.push(msg);
-        defenderMessages.push(msg);
-      } else {
-        const missMsg = `${actorName}出招落空！`;
-        logs.push(missMsg);
-        attackerMessages.push(missMsg);
-        defenderMessages.push(missMsg);
-      }
+      const missMsg = `${actorName}出招落空！`;
+      logs.push(missMsg);
+      attackerMessages.push(missMsg);
+      defenderMessages.push(missMsg);
     }
 
     if (strike.defenderDefeated) {
@@ -521,6 +555,9 @@ async function attack(cmd, targeted, cost, ctx, logs) {
   const defenderDeltaHp = roundInt(defenderCombatant.entity.hp) - defenderInitialHp;
   const attackerDeltaSp = roundInt(c.action) - attackerInitialAction;
 
+  const attackerStrike = attackerFirst ? firstStrike : secondStrike;
+  const defenderStrike = attackerFirst ? secondStrike : firstStrike;
+
   queueEvent(ctx, {
     playerId: c.accountId,
     kind: 'combat',
@@ -528,12 +565,14 @@ async function attack(cmd, targeted, cost, ctx, logs) {
       kind: 'combat',
       attackerId: c.accountId,
       defenderId: selection.type === 'player' ? defenderCombatant.accountId : null,
-      attackerRoll: attackerFirst ? firstStrike.attackerRoll : secondStrike?.attackerRoll,
-      defenderRoll: attackerFirst ? firstStrike.defenderRoll : secondStrike?.defenderRoll,
-      hit: attackerFirst ? firstStrike.hit : secondStrike?.hit,
-      damage: attackerFirst ? firstStrike.damage : secondStrike?.damage,
+      attackerRoll: attackerStrike?.attackerRoll || null,
+      defenderRoll: attackerStrike?.defenderRoll || null,
+      hit: !!attackerStrike?.hit,
+      damage: attackerStrike?.damage || 0,
       deltaHp: attackerDeltaHp,
       deltaSp: attackerDeltaSp,
+      crit: !!attackerStrike?.crit,
+      lifesteal: attackerStrike?.lifesteal || 0,
       view: 'attacker',
       messages: attackerMessages
     })
@@ -547,12 +586,14 @@ async function attack(cmd, targeted, cost, ctx, logs) {
         kind: 'combat',
         attackerId: c.accountId,
         defenderId: defenderCombatant.accountId,
-        attackerRoll: attackerFirst ? secondStrike?.attackerRoll : firstStrike.attackerRoll,
-        defenderRoll: attackerFirst ? secondStrike?.defenderRoll : firstStrike.defenderRoll,
-        hit: attackerFirst ? secondStrike?.hit : firstStrike.hit,
-        damage: attackerFirst ? secondStrike?.damage : firstStrike.damage,
+        attackerRoll: defenderStrike?.attackerRoll || null,
+        defenderRoll: defenderStrike?.defenderRoll || null,
+        hit: !!defenderStrike?.hit,
+        damage: defenderStrike?.damage || 0,
         deltaHp: defenderDeltaHp,
         deltaSp: 0,
+        crit: !!defenderStrike?.crit,
+        lifesteal: defenderStrike?.lifesteal || 0,
         view: 'defender',
         messages: defenderMessages
       })
