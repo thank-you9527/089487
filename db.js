@@ -448,36 +448,50 @@ async function markEventsRead(playerId, upToId, client) {
 
 async function createSession(accountId, meta = {}) {
   if (!accountId) throw new Error('accountId required');
-  const sessionId = randomUUID();
-  const ttlSeconds = Math.max(1, Math.floor(SESSION_TTL_MS / 1000)) || 7 * 24 * 60 * 60;
-  try {
-    await pool.query(
-      `INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip)
-       VALUES($1,$2,now(),now(),now() + ($3::int) * interval '1 second',$4,$5)`,
-      [sessionId, accountId, ttlSeconds, meta.userAgent || null, meta.ip || null]
+  return withTx(async client => {
+    const runner = exec(client);
+    await runner.query('DELETE FROM sessions WHERE account_id=$1 AND expires_at <= now()', [accountId]);
+    const { rows } = await runner.query(
+      'SELECT 1 FROM sessions WHERE account_id=$1 AND expires_at > now() LIMIT 1',
+      [accountId]
     );
-    return { sessionId, expiresAt: new Date(Date.now() + ttlSeconds * 1000) };
-  } catch (err) {
-    if (err.code === '23505') {
-      const e = new Error('already logged in');
-      e.code = 'ALREADY_LOGGED_IN';
-      throw e;
+    if (rows.length > 0) {
+      const err = new Error('already logged in');
+      err.code = 'ALREADY_LOGGED_IN';
+      throw err;
     }
-    throw err;
-  }
+    const sessionId = randomUUID();
+    const ttlMs = Math.max(1, Math.floor(SESSION_TTL_MS));
+    try {
+      await runner.query(
+        `INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip)
+         VALUES($1,$2,now(),now(),now() + ($3::bigint) * interval '1 millisecond',$4,$5)`,
+        [sessionId, accountId, ttlMs, meta.userAgent || null, meta.ip || null]
+      );
+    } catch (err) {
+      if (err.code === '23505') {
+        const dup = new Error('already logged in');
+        dup.code = 'ALREADY_LOGGED_IN';
+        throw dup;
+      }
+      throw err;
+    }
+    return { sessionId, expiresAt: new Date(Date.now() + ttlMs) };
+  });
 }
 
 async function replaceSession(accountId, meta = {}) {
   return withTx(async client => {
-    await client.query('DELETE FROM sessions WHERE account_id=$1', [accountId]);
+    const runner = exec(client);
+    await runner.query('DELETE FROM sessions WHERE account_id=$1', [accountId]);
     const sessionId = randomUUID();
-    const ttlSeconds = Math.max(1, Math.floor(SESSION_TTL_MS / 1000)) || 7 * 24 * 60 * 60;
-    await client.query(
+    const ttlMs = Math.max(1, Math.floor(SESSION_TTL_MS));
+    await runner.query(
       `INSERT INTO sessions(session_id, account_id, issued_at, last_seen, expires_at, user_agent, ip)
-       VALUES($1,$2,now(),now(),now() + ($3::int) * interval '1 second',$4,$5)`,
-      [sessionId, accountId, ttlSeconds, meta.userAgent || null, meta.ip || null]
+       VALUES($1,$2,now(),now(),now() + ($3::bigint) * interval '1 millisecond',$4,$5)`,
+      [sessionId, accountId, ttlMs, meta.userAgent || null, meta.ip || null]
     );
-    return { sessionId, expiresAt: new Date(Date.now() + ttlSeconds * 1000) };
+    return { sessionId, expiresAt: new Date(Date.now() + ttlMs) };
   });
 }
 
