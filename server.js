@@ -203,6 +203,9 @@ app.use(express.json());
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'landing.html'));
 });
+app.get('/player.html', (req, res) => {
+  res.redirect(302, '/');
+});
 app.use(express.static(__dirname));
 
 const mapPath = path.join(__dirname, 'data', 'map.json');

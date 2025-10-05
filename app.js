@@ -1,20 +1,20 @@
-const logContainer = document.getElementById('logContainer');
-const logsDiv = document.getElementById('logs');
-const sendBtn = document.getElementById('sendBtn');
-const commandInput = document.getElementById('commandInput');
-const searchToggle = document.getElementById('searchToggle');
-const searchInput = document.getElementById('searchInput');
-const sidebar = document.getElementById('sidebar');
-const sidebarToggle = document.getElementById('sidebarToggle');
-const logoutBtn = document.getElementById('logoutBtn');
-const profileBtn = document.getElementById('profileBtn');
-const logManageBtn = document.getElementById('logManageBtn');
-const sidebarMain = document.getElementById('sidebarMain');
-const logManager = document.getElementById('logManager');
-const clearLogsBtn = document.getElementById('clearLogsBtn');
-const exportLogsBtn = document.getElementById('exportLogsBtn');
-const backBtn = document.getElementById('backBtn');
-const downloadBtn = document.getElementById('downloadBtn');
+const qs = (selector, root = document) => root.querySelector(selector);
+const on = (el, event, handler) => el && el.addEventListener(event, handler);
+
+const logContainer = qs('#logContainer');
+const logsDiv = qs('#logs');
+const sendBtn = qs('#sendBtn');
+const commandInput = qs('#commandInput');
+const searchToggle = qs('#searchToggle');
+const searchInput = qs('#searchInput');
+const sidebar = qs('#sidebar');
+const sidebarToggle = qs('#sidebarToggle');
+const logoutBtn = qs('#logoutBtn');
+const logManageBtn = qs('#logManageBtn');
+const sidebarMain = qs('#sidebarMain');
+const clearLogsBtn = qs('#clearLogsBtn');
+const exportLogsBtn = qs('#exportLogsBtn');
+const downloadBtn = qs('#downloadBtn');
 const currentUser = localStorage.getItem('currentUser');
 const logKey = currentUser ? `logs_${currentUser}` : 'logs';
 const storedLogs = JSON.parse(localStorage.getItem(logKey) || '[]');
@@ -346,7 +346,7 @@ function initialMessage() {
   }
 }
 
-sendBtn.addEventListener('click', async () => {
+on(sendBtn, 'click', async () => {
   const text = commandInput.value.trim();
   if (!text) return;
   try {
@@ -386,7 +386,7 @@ sendBtn.addEventListener('click', async () => {
   }
 });
 
-searchToggle.addEventListener('click', () => {
+on(searchToggle, 'click', () => {
   if (searchInput.classList.contains('hidden')) {
     searchInput.classList.remove('hidden');
     searchInput.focus();
@@ -410,7 +410,7 @@ searchToggle.addEventListener('click', () => {
   }
 });
 
-logContainer.addEventListener('scroll', () => {
+on(logContainer, 'scroll', () => {
   if (logContainer.scrollTop === 0 && loadedCount < logs.length) {
     loadedCount += 10;
     renderLogs();
@@ -418,15 +418,11 @@ logContainer.addEventListener('scroll', () => {
   }
 });
 
-sidebarToggle.addEventListener('click', () => {
-  sidebar.classList.toggle('show');
+on(sidebarToggle, 'click', () => {
+  sidebar?.classList.toggle('show');
 });
 
-profileBtn.addEventListener('click', () => {
-  window.location.href = 'player.html';
-});
-
-logoutBtn.addEventListener('click', async () => {
+on(logoutBtn, 'click', async () => {
   if (confirm('是否登出？')) {
     try {
       const res = await fetch('/api/logout', { method: 'POST', credentials: 'include' });
@@ -446,18 +442,21 @@ logoutBtn.addEventListener('click', async () => {
   }
 });
 
-logManageBtn.addEventListener('click', () => {
-  sidebarMain.classList.add('hidden');
-  logManager.classList.remove('hidden');
+on(logManageBtn, 'click', () => {
+  if (!sidebarMain) return;
+  const opened = sidebarMain.classList.toggle('tools-open');
+  if (!opened && downloadBtn) {
+    downloadBtn.classList.add('hidden');
+  }
 });
 
-backBtn.addEventListener('click', () => {
-  logManager.classList.add('hidden');
-  sidebarMain.classList.remove('hidden');
-  downloadBtn.classList.add('hidden');
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !sidebarMain?.classList.contains('tools-open')) return;
+  sidebarMain.classList.remove('tools-open');
+  downloadBtn?.classList.add('hidden');
 });
 
-clearLogsBtn.addEventListener('click', () => {
+on(clearLogsBtn, 'click', () => {
   if (confirm('確定清除文字資料？')) {
     localStorage.removeItem(logKey);
     logs = [];
@@ -465,7 +464,7 @@ clearLogsBtn.addEventListener('click', () => {
   }
 });
 
-exportLogsBtn.addEventListener('click', () => {
+on(exportLogsBtn, 'click', () => {
   const content = logs
     .map((l) => {
       const header = `[${new Date(l.date).toLocaleString()}]`;
@@ -475,6 +474,7 @@ exportLogsBtn.addEventListener('click', () => {
     .join('\n');
   const blob = new Blob([content], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
+  if (!downloadBtn) return;
   downloadBtn.classList.remove('hidden');
   downloadBtn.onclick = () => {
     const a = document.createElement('a');

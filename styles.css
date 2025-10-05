@@ -104,14 +104,19 @@ body {
   padding: 10px;
 }
 
-.logout-btn {
-  margin-top: auto;
+.tools-panel {
+  display: none;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
 }
 
-.player-info {
-  max-width: 300px;
-  margin: 20px auto;
-  text-align: left;
+#sidebarMain.tools-open .tools-panel {
+  display: flex;
+}
+
+.logout-btn {
+  margin-top: auto;
 }
 
 .login-container,
