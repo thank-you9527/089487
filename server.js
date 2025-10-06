@@ -1169,6 +1169,14 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         worldMap,
         saveMap,
         getLocationInfo: pos => getLocationInfo(playersMap.values(), pos),
+        countPlayersAt: pos => countPlayersAtPosition(playersMap.values(), pos),
+        getRegionFromDb: pos => {
+          if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number' || typeof pos.z !== 'number') {
+            return Promise.resolve(null);
+          }
+          return db.getRegionByCoord(pos.x, pos.y, pos.z, client);
+        },
+        listRegionMobsFromDb: regionId => db.listRegionMobs(regionId, client),
         formatLocationInfo,
         formatCharacterInfo,
         listPlayersByName: name => playersByName.get(normalizeName(name)) || [],

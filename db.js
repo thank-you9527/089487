@@ -117,6 +117,26 @@ const itemFieldMap = {
   deleted_at: 'deletedAt'
 };
 
+const regionFieldMap = {
+  name_norm: 'nameNorm',
+  owner_account_id: 'ownerAccountId',
+  is_system: 'isSystem',
+  is_claimable: 'isClaimable',
+  is_destructible: 'isDestructible',
+  created_at: 'createdAt',
+  updated_at: 'updatedAt',
+  owner_name: 'ownerName'
+};
+
+const regionMobFieldMap = {
+  region_id: 'regionId',
+  is_guardian: 'isGuardian',
+  hp_max: 'hpMax',
+  respawn_at: 'respawnAt',
+  created_at: 'createdAt',
+  updated_at: 'updatedAt'
+};
+
 function toCamelItem(row) {
   if (!row) return null;
   const result = { id: row.id, prefix: row.prefix, level: row.level, name: row.base_name };
@@ -135,6 +155,26 @@ function toCamelItem(row) {
     }
   } else {
     result.effects = {};
+  }
+  return result;
+}
+
+function toCamelRegion(row) {
+  if (!row) return null;
+  const result = {};
+  for (const key in row) {
+    const mapped = regionFieldMap[key] || key;
+    result[mapped] = row[key];
+  }
+  return result;
+}
+
+function toCamelRegionMob(row) {
+  if (!row) return null;
+  const result = {};
+  for (const key in row) {
+    const mapped = regionMobFieldMap[key] || key;
+    result[mapped] = row[key];
   }
   return result;
 }
@@ -804,12 +844,35 @@ async function withItemNameLock(nameNorm, fn, client) {
   }
 }
 
-async function getRegionByCoord() {
-  return null;
+async function getRegionByCoord(x, y, z, client) {
+  const coords = [x, y, z].map(Number);
+  if (coords.some(value => !Number.isFinite(value))) {
+    return null;
+  }
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    `SELECT wr.*, p.name AS owner_name
+       FROM world_regions wr
+       LEFT JOIN players p ON p.id = wr.owner_account_id
+      WHERE wr.x = $1 AND wr.y = $2 AND wr.z = $3
+      LIMIT 1`,
+    coords
+  );
+  if (rows.length === 0) return null;
+  return toCamelRegion(rows[0]);
 }
 
-async function listRegionMobs() {
-  return [];
+async function listRegionMobs(regionId, client) {
+  if (!regionId) return [];
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    `SELECT *
+       FROM region_mobs
+      WHERE region_id = $1
+      ORDER BY is_guardian DESC, created_at ASC`,
+    [regionId]
+  );
+  return rows.map(toCamelRegionMob);
 }
 
 module.exports = {
