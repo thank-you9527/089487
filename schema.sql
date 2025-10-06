@@ -69,6 +69,39 @@ CREATE TABLE IF NOT EXISTS items (
   deleted_at     TIMESTAMPTZ
 );
 
+CREATE TABLE IF NOT EXISTS world_regions (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  x                  INT  NOT NULL,
+  y                  INT  NOT NULL,
+  z                  INT  NOT NULL,
+  name               TEXT NOT NULL,
+  name_norm          TEXT NOT NULL,
+  level              INT  NOT NULL,
+  owner_account_id   UUID,
+  is_system          BOOLEAN NOT NULL DEFAULT FALSE,
+  is_claimable       BOOLEAN NOT NULL DEFAULT TRUE,
+  is_destructible    BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT world_regions_system_guardrails
+    CHECK (NOT is_system OR (owner_account_id IS NULL AND is_claimable = FALSE AND is_destructible = FALSE)),
+  CONSTRAINT world_regions_name_norm_lower CHECK (name_norm = lower(name_norm))
+);
+
+CREATE TABLE IF NOT EXISTS region_mobs (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  region_id     UUID NOT NULL REFERENCES world_regions(id),
+  name          TEXT NOT NULL,
+  is_guardian   BOOLEAN NOT NULL DEFAULT FALSE,
+  level         INT NOT NULL,
+  hp_max        INT NOT NULL,
+  atk           INT NOT NULL,
+  alive         BOOLEAN NOT NULL DEFAULT TRUE,
+  respawn_at    TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- 帳號表
 CREATE TABLE IF NOT EXISTS accounts (
   id            TEXT PRIMARY KEY,
@@ -91,3 +124,66 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_items_base_name_active
   WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_items_owner ON items(owner_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_items_maker ON items(maker_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_world_regions_coords ON world_regions(x, y, z);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_world_regions_name_norm ON world_regions(name_norm);
+CREATE INDEX IF NOT EXISTS idx_region_mobs_region ON region_mobs(region_id);
+CREATE INDEX IF NOT EXISTS idx_region_mobs_region_guardian ON region_mobs(region_id, is_guardian);
+
+CREATE OR REPLACE FUNCTION trg_world_regions_touch()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION trg_region_mobs_touch()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION trg_world_regions_protect_system()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF OLD.is_system THEN
+    IF NEW.is_system IS DISTINCT FROM OLD.is_system THEN
+      RAISE EXCEPTION 'system regions cannot toggle is_system flag';
+    END IF;
+    IF NEW.owner_account_id IS DISTINCT FROM OLD.owner_account_id
+       OR NEW.is_claimable IS DISTINCT FROM OLD.is_claimable
+       OR NEW.is_destructible IS DISTINCT FROM OLD.is_destructible
+       OR NEW.x IS DISTINCT FROM OLD.x
+       OR NEW.y IS DISTINCT FROM OLD.y
+       OR NEW.z IS DISTINCT FROM OLD.z
+       OR NEW.name IS DISTINCT FROM OLD.name
+       OR NEW.name_norm IS DISTINCT FROM OLD.name_norm
+       OR NEW.level IS DISTINCT FROM OLD.level THEN
+      RAISE EXCEPTION 'system regions have protected fields';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_world_regions_touch_row') THEN
+    CREATE TRIGGER trg_world_regions_touch_row
+      BEFORE UPDATE ON world_regions
+      FOR EACH ROW EXECUTE FUNCTION trg_world_regions_touch();
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_world_regions_protect_system_row') THEN
+    CREATE TRIGGER trg_world_regions_protect_system_row
+      BEFORE UPDATE ON world_regions
+      FOR EACH ROW EXECUTE FUNCTION trg_world_regions_protect_system();
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_region_mobs_touch_row') THEN
+    CREATE TRIGGER trg_region_mobs_touch_row
+      BEFORE UPDATE ON region_mobs
+      FOR EACH ROW EXECUTE FUNCTION trg_region_mobs_touch();
+  END IF;
+END;
+$$;
