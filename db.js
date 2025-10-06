@@ -875,6 +875,209 @@ async function listRegionMobs(regionId, client) {
   return rows.map(toCamelRegionMob);
 }
 
+function normalizeRegionName(name) {
+  if (typeof name !== 'string') return '';
+  const trimmed = name.trim();
+  return canonicalize(trimmed);
+}
+
+async function claimRegionByCoord(x, y, z, accountId, attributes = {}, client) {
+  const coords = [x, y, z].map(Number);
+  if (coords.some(value => !Number.isFinite(value))) {
+    return { ok: false, reason: 'invalid-coordinates' };
+  }
+  if (!accountId) {
+    return { ok: false, reason: 'missing-account' };
+  }
+  const name = typeof attributes.name === 'string' ? attributes.name.trim() : '';
+  const levelInput = Number(attributes.level);
+  const level = Number.isFinite(levelInput) ? Math.max(1, Math.round(levelInput)) : null;
+  const perform = async runnerClient => {
+    const runner = exec(runnerClient);
+    let { rows } = await runner.query(
+      'SELECT * FROM world_regions WHERE x=$1 AND y=$2 AND z=$3 FOR UPDATE',
+      coords
+    );
+    let regionRow = rows[0];
+
+    if (!regionRow) {
+      if (!name) {
+        return { ok: false, reason: 'invalid-name' };
+      }
+      const nameNorm = normalizeRegionName(name);
+      if (!nameNorm) {
+        return { ok: false, reason: 'invalid-name' };
+      }
+      const targetLevel = level ?? 1;
+      try {
+        ({ rows } = await runner.query(
+          `INSERT INTO world_regions (x, y, z, name, name_norm, level, owner_account_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)
+           RETURNING *`,
+          [...coords, name, nameNorm, targetLevel, accountId]
+        ));
+        regionRow = rows[0];
+      } catch (err) {
+        if (err && err.code === '23505') {
+          if (err.constraint === 'idx_world_regions_name_norm' || err.constraint === 'world_regions_name_norm_key') {
+            return { ok: false, reason: 'name-taken' };
+          }
+          if (err.constraint === 'idx_world_regions_coords' || err.constraint === 'world_regions_pkey') {
+            const retry = await runner.query(
+              'SELECT * FROM world_regions WHERE x=$1 AND y=$2 AND z=$3 FOR UPDATE',
+              coords
+            );
+            regionRow = retry.rows[0];
+          } else {
+            throw err;
+          }
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    if (!regionRow) {
+      return { ok: false, reason: 'unknown' };
+    }
+
+    if (regionRow.is_system || regionRow.is_claimable === false) {
+      return { ok: false, reason: 'not-claimable', region: toCamelRegion(regionRow) };
+    }
+
+    if (regionRow.owner_account_id && regionRow.owner_account_id !== accountId) {
+      return { ok: false, reason: 'already-claimed', region: toCamelRegion(regionRow) };
+    }
+
+    const updates = [];
+    const values = [];
+    let idx = 1;
+
+    if (name) {
+      const normalized = normalizeRegionName(name);
+      if (!normalized) {
+        return { ok: false, reason: 'invalid-name' };
+      }
+      updates.push(`name=$${idx++}`);
+      values.push(name);
+      updates.push(`name_norm=$${idx++}`);
+      values.push(normalized);
+    }
+
+    if (level != null) {
+      updates.push(`level=$${idx++}`);
+      values.push(level);
+    }
+
+    updates.push(`owner_account_id=$${idx++}`);
+    values.push(accountId);
+    values.push(regionRow.id);
+
+    try {
+      const result = await runner.query(
+        `UPDATE world_regions
+            SET ${updates.join(', ')}
+          WHERE id=$${idx}
+          RETURNING *`,
+        values
+      );
+      regionRow = result.rows[0];
+    } catch (err) {
+      if (err && err.code === '23505') {
+        if (err.constraint === 'idx_world_regions_name_norm' || err.constraint === 'world_regions_name_norm_key') {
+          return { ok: false, reason: 'name-taken' };
+        }
+      }
+      throw err;
+    }
+
+    await runner.query('DELETE FROM region_mobs WHERE region_id=$1 AND is_guardian=TRUE', [regionRow.id]);
+
+    const region = await getRegionByCoord(coords[0], coords[1], coords[2], runner);
+    return { ok: true, region };
+  };
+
+  if (client) {
+    return perform(client);
+  }
+  return withTx(perform);
+}
+
+async function spawnMob(regionId, attrs = {}, client) {
+  if (!regionId) {
+    return { ok: false, reason: 'missing-region' };
+  }
+  const name = typeof attrs.name === 'string' ? attrs.name.trim() : '';
+  if (!name) {
+    return { ok: false, reason: 'invalid-name' };
+  }
+  const levelInput = Number(attrs.level);
+  const level = Number.isFinite(levelInput) ? Math.max(1, Math.round(levelInput)) : 1;
+  const hpInput = Number(attrs.hpMax);
+  const atkInput = Number(attrs.atk);
+  const hpMax = Number.isFinite(hpInput) ? Math.max(1, Math.round(hpInput)) : null;
+  const atk = Number.isFinite(atkInput) ? Math.max(1, Math.round(atkInput)) : null;
+  const isGuardian = !!attrs.isGuardian;
+  const perform = async runnerClient => {
+    const runner = exec(runnerClient);
+    const { rows: regionRows } = await runner.query(
+      'SELECT * FROM world_regions WHERE id=$1 FOR UPDATE',
+      [regionId]
+    );
+    if (regionRows.length === 0) {
+      return { ok: false, reason: 'region-missing' };
+    }
+
+    const existingRes = await runner.query(
+      'SELECT * FROM region_mobs WHERE region_id=$1 AND lower(name)=lower($2) LIMIT 1',
+      [regionId, name]
+    );
+    let mobRow = existingRes.rows[0];
+
+    if (!mobRow) {
+      if (!isGuardian) {
+        const { rows: countRows } = await runner.query(
+          'SELECT COUNT(*)::int AS count FROM region_mobs WHERE region_id=$1 AND is_guardian=FALSE',
+          [regionId]
+        );
+        const count = countRows[0]?.count ?? 0;
+        if (Number(count) >= 5) {
+          return { ok: false, reason: 'mob-limit' };
+        }
+      }
+      const insert = await runner.query(
+        `INSERT INTO region_mobs (region_id, name, is_guardian, level, hp_max, atk, alive, respawn_at)
+         VALUES ($1,$2,$3,$4,$5,$6,TRUE,NULL)
+         RETURNING *`,
+        [regionId, name, isGuardian, level, hpMax ?? level, atk ?? level]
+      );
+      mobRow = insert.rows[0];
+    } else {
+      const update = await runner.query(
+        `UPDATE region_mobs
+            SET name=$2,
+                is_guardian=$3,
+                level=$4,
+                hp_max=$5,
+                atk=$6,
+                alive=TRUE,
+                respawn_at=NULL
+          WHERE id=$1
+          RETURNING *`,
+        [mobRow.id, name, isGuardian, level, hpMax ?? mobRow.hp_max, atk ?? mobRow.atk]
+      );
+      mobRow = update.rows[0];
+    }
+
+    return { ok: true, mob: toCamelRegionMob(mobRow) };
+  };
+
+  if (client) {
+    return perform(client);
+  }
+  return withTx(perform);
+}
+
 module.exports = {
   init,
   withTx,
@@ -914,5 +1117,7 @@ module.exports = {
   withItemNameLock,
   getRegionByCoord,
   listRegionMobs,
+  claimRegionByCoord,
+  spawnMob,
   _pool: pool
 };
