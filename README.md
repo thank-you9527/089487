@@ -34,6 +34,10 @@ Player accounts, sessions, and character state live in PostgreSQL (see `schema.s
 World data such as the shared map and item tables remain JSON-backed with queued writes to avoid concurrent corruption; migrate
 them to a transactional database for production deployments.
 
+### Seeding system regions
+- Define protected regions in `seeds/preset_regions.json`. Each entry accepts coordinates, name, level, and optional monster definitions. Regions flagged as `is_system` become non-claimable/non-destructible and can expose an `owner_display` label for GM-controlled areas.
+- Run `npm run seed:regions` to upsert the presets into PostgreSQL. The script is idempotent, so you can rerun it whenever the seed file changes.
+
 ### Observability & operations
 - **Real-time events** – Clients open `GET /api/events` (Server-Sent Events) to receive combat logs and system updates instantly. The stream accepts `Last-Event-ID`/`sinceId` to backfill the latest 200 events and emits keep-alives every 25 seconds to stay proxy-friendly.
 - **Rate limiting** – Authenticated API routes enforce a sliding-window bucket of 3 commands per second (burst 6) per account and IP. Responses expose `X-RateLimit-*` headers and return `429 { "error": "rate-limited" }` when exceeded.

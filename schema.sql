@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS world_regions (
   name_norm          TEXT NOT NULL,
   level              INT  NOT NULL,
   owner_account_id   UUID,
+  owner_display      TEXT,
   is_system          BOOLEAN NOT NULL DEFAULT FALSE,
   is_claimable       BOOLEAN NOT NULL DEFAULT TRUE,
   is_destructible    BOOLEAN NOT NULL DEFAULT TRUE,
@@ -101,6 +102,9 @@ CREATE TABLE IF NOT EXISTS region_mobs (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE world_regions
+  ADD COLUMN IF NOT EXISTS owner_display TEXT;
 
 -- 帳號表
 CREATE TABLE IF NOT EXISTS accounts (

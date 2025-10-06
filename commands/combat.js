@@ -258,7 +258,11 @@ async function handleMonsterDefeat(monster, loc, ctx, logs, regionInfo) {
     }
   }
 
-  if (monster.guardian && loc.owner) {
+  const regionDestructible =
+    regionInfo?.isDestructible == null || regionInfo.isDestructible !== false;
+  const regionSystem = regionInfo?.isSystem === true;
+
+  if (monster.guardian && loc.owner && regionDestructible && !regionSystem) {
     const prev = loc.name;
     const preservedLevel =
       loc.initialLevel != null ? loc.initialLevel : loc.level || 1;

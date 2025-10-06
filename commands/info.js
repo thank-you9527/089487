@@ -77,7 +77,7 @@ async function buildLocationInfo(ctx, position) {
       ...fallbackInfo,
       name: region.name || fallbackInfo.name,
       level: region.level != null ? region.level : fallbackInfo.level,
-      owner: region.ownerName || fallbackInfo.owner || '無所屬',
+      owner: region.ownerDisplay || region.ownerName || fallbackInfo.owner || '無所屬',
       population
     };
   } catch (err) {

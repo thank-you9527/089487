@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "echo \"(no tests)\" && exit 0",
-    "import:map": "node scripts/import-map-json.js"
+    "import:map": "node scripts/import-map-json.js",
+    "seed:regions": "node scripts/seed-preset-regions.js"
   },
   "keywords": [],
   "author": "",

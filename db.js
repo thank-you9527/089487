@@ -120,6 +120,7 @@ const itemFieldMap = {
 const regionFieldMap = {
   name_norm: 'nameNorm',
   owner_account_id: 'ownerAccountId',
+  owner_display: 'ownerDisplay',
   is_system: 'isSystem',
   is_claimable: 'isClaimable',
   is_destructible: 'isDestructible',
@@ -270,6 +271,7 @@ async function init() {
     name_norm          TEXT NOT NULL,
     level              INT  NOT NULL,
     owner_account_id   UUID,
+    owner_display      TEXT,
     is_system          BOOLEAN NOT NULL DEFAULT FALSE,
     is_claimable       BOOLEAN NOT NULL DEFAULT TRUE,
     is_destructible    BOOLEAN NOT NULL DEFAULT TRUE,
@@ -292,6 +294,9 @@ async function init() {
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
   );
+
+  ALTER TABLE world_regions
+    ADD COLUMN IF NOT EXISTS owner_display TEXT;
   CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
   CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
   CREATE INDEX IF NOT EXISTS idx_players_pos ON players(x, y, z);
@@ -911,10 +916,10 @@ async function claimRegionByCoord(x, y, z, accountId, attributes = {}, client) {
       const targetLevel = level ?? 1;
       try {
         ({ rows } = await runner.query(
-          `INSERT INTO world_regions (x, y, z, name, name_norm, level, owner_account_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7)
+          `INSERT INTO world_regions (x, y, z, name, name_norm, level, owner_account_id, owner_display)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
            RETURNING *`,
-          [...coords, name, nameNorm, targetLevel, accountId]
+          [...coords, name, nameNorm, targetLevel, accountId, null]
         ));
         regionRow = rows[0];
       } catch (err) {
@@ -971,6 +976,7 @@ async function claimRegionByCoord(x, y, z, accountId, attributes = {}, client) {
 
     updates.push(`owner_account_id=$${idx++}`);
     values.push(accountId);
+    updates.push(`owner_display=NULL`);
     values.push(regionRow.id);
 
     try {
@@ -1036,13 +1042,13 @@ async function killMob(mobId, options = {}, client) {
      WHERE rm.id = $3
        AND rm.alive = TRUE
        AND wr.id = rm.region_id
-     RETURNING rm.*, wr.is_system AS region_is_system, wr.id AS region_id, wr.owner_account_id AS region_owner_account_id`,
+     RETURNING rm.*, wr.is_system AS region_is_system, wr.is_destructible AS region_is_destructible, wr.id AS region_id, wr.owner_account_id AS region_owner_account_id`,
     [nowIso, respawnAt, mobId]
   );
 
   if (update.rows.length === 0) {
     const existing = await runner.query(
-      `SELECT rm.*, wr.is_system AS region_is_system, wr.id AS region_id, wr.owner_account_id AS region_owner_account_id
+      `SELECT rm.*, wr.is_system AS region_is_system, wr.is_destructible AS region_is_destructible, wr.id AS region_id, wr.owner_account_id AS region_owner_account_id
          FROM region_mobs rm
          JOIN world_regions wr ON wr.id = rm.region_id
         WHERE rm.id = $1
@@ -1059,7 +1065,8 @@ async function killMob(mobId, options = {}, client) {
       region: {
         id: existing.rows[0].region_id,
         isSystem: existing.rows[0].region_is_system,
-        ownerAccountId: existing.rows[0].region_owner_account_id
+        ownerAccountId: existing.rows[0].region_owner_account_id,
+        isDestructible: existing.rows[0].region_is_destructible
       }
     };
   }
@@ -1069,13 +1076,20 @@ async function killMob(mobId, options = {}, client) {
   const region = {
     id: row.region_id,
     isSystem: row.region_is_system,
-    ownerAccountId: row.region_owner_account_id
+    ownerAccountId: row.region_owner_account_id,
+    isDestructible: row.region_is_destructible
   };
 
-  if (mob.isGuardian && !region.isSystem && region.id) {
+  if (
+    mob.isGuardian &&
+    !region.isSystem &&
+    region.id &&
+    (region.isDestructible == null || region.isDestructible !== false)
+  ) {
     await runner.query(
       `UPDATE world_regions
           SET owner_account_id = NULL,
+              owner_display = NULL,
               name = $2,
               name_norm = $3,
               updated_at = $1
