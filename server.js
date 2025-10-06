@@ -13,6 +13,7 @@ const {
   buildItem,
   getPrefixLabel
 } = require('./lib/itemPrefixes');
+const { mergeDbMonstersIntoLocation } = require('./lib/regions');
 
 function assertEnvOrExit() {
   const missing = [];
@@ -208,15 +209,67 @@ app.get('/player.html', (req, res) => {
 });
 app.use(express.static(__dirname));
 
-const mapPath = path.join(__dirname, 'data', 'map.json');
-let worldMap = {};
-let mapWriteLock = Promise.resolve();
+const worldMap = Object.create(null);
 
 const normalizeName = canonicalize;
 
+function locationKeyFromPosition(pos) {
+  if (!pos) return null;
+  const { x, y, z } = pos;
+  if (![x, y, z].every(value => Number.isFinite(value))) return null;
+  return `${x},${y},${z}`;
+}
+
+function ensureWorldLocation(pos) {
+  const key = locationKeyFromPosition(pos);
+  if (!key) return null;
+  if (!worldMap[key]) worldMap[key] = {};
+  const loc = worldMap[key];
+  if (!loc.name) loc.name = '未開拓之地';
+  if (loc.level == null) loc.level = '';
+  if (!loc.owner) loc.owner = '無所屬';
+  if (typeof loc.description !== 'string') loc.description = '嗚啦呀哈呀哈嗚啦';
+  if (!Array.isArray(loc.monsters)) loc.monsters = [];
+  if (!Array.isArray(loc.items)) loc.items = [];
+  loc.address = { x: pos.x ?? 0, y: pos.y ?? 0, z: pos.z ?? 0 };
+  return loc;
+}
+
+function applyRegionToLocation(pos, region) {
+  const loc = ensureWorldLocation(pos);
+  if (!loc) return null;
+  if (region) {
+    loc.regionId = region.id || null;
+    loc.name = region.name || loc.name || '未開拓之地';
+    loc.level = region.level != null ? region.level : loc.level ?? '';
+    const ownerLabel = region.ownerDisplay || region.ownerName;
+    if (ownerLabel) {
+      loc.owner = ownerLabel;
+    } else if (!region.ownerAccountId) {
+      loc.owner = '無所屬';
+    }
+    loc.ownerAccountId = region.ownerAccountId || null;
+    loc.ownerDisplay = region.ownerDisplay || null;
+    loc.isSystem = !!region.isSystem;
+    loc.isClaimable = region.isClaimable !== false;
+    loc.isDestructible = region.isDestructible !== false;
+  } else {
+    loc.regionId = null;
+    loc.ownerAccountId = null;
+    loc.ownerDisplay = null;
+    loc.isSystem = false;
+    loc.isClaimable = true;
+    loc.isDestructible = true;
+    loc.name = loc.name || '未開拓之地';
+    loc.level = '';
+    loc.owner = '無所屬';
+  }
+  return loc;
+}
+
 function forEachMonster(callback) {
   if (typeof callback !== 'function') return;
-  for (const key in worldMap) {
+  for (const key of Object.keys(worldMap)) {
     const loc = worldMap[key];
     if (!loc || !Array.isArray(loc.monsters)) continue;
     for (const monster of loc.monsters) {
@@ -249,58 +302,11 @@ async function isAnyNameTaken(name, options = {}) {
   const canonical = canonicalize(name);
   if (!canonical) return false;
   if (findMonstersByNormalizedName(name).length > 0) return true;
+  if (await db.isRegionMobNameTaken(canonical, options.client)) return true;
   const players = await db.findPlayersByNameInsensitive(name, options.client);
   if (players.length > 0) return true;
   const item = await db.findActiveItemByNameNorm(canonical, options.client);
   return !!item;
-}
-
-function scheduleMapWrite(task) {
-  const next = mapWriteLock.then(() => task());
-  mapWriteLock = next.catch(() => {});
-  return next;
-}
-
-async function loadMap() {
-  try {
-    const data = await fs.readFile(mapPath, 'utf8');
-    worldMap = JSON.parse(data);
-    for (const key in worldMap) {
-      const loc = worldMap[key];
-      if (loc && loc.name === '荒山野嶺') {
-        loc.name = '廢墟';
-        if (typeof loc.description === 'string') {
-          loc.description = loc.description.replace(/荒山野嶺/g, '廢墟');
-        }
-      }
-      if (loc && Array.isArray(loc.monsters)) {
-        if (loc.monsters.length > 5) {
-          loc.monsters = loc.monsters.slice(0, 5);
-          worldMap[key].monsters = loc.monsters;
-        }
-        for (const m of loc.monsters) {
-          if (!m.maxHp) m.maxHp = hpAtLevel(m.level);
-        }
-      }
-    }
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      worldMap = {};
-      await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
-    } else {
-      console.error('Failed to read map', err);
-      worldMap = {};
-    }
-  }
-}
-async function saveMap() {
-  return scheduleMapWrite(async () => {
-    try {
-      await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
-    } catch (err) {
-      console.error('Failed to save map', err);
-    }
-  });
 }
 
 function hydrateCharacter(row) {
@@ -643,7 +649,7 @@ async function pickupItems(c, options = {}) {
   const { queueEvent, logs, dbClient } = options;
   const key = `${c.position.x},${c.position.y},${c.position.z}`;
   const loc = worldMap[key];
-  if (!loc || !Array.isArray(loc.items)) return;
+  if (!loc || !Array.isArray(loc.items) || loc.items.length === 0) return;
   const remaining = [];
   for (const item of loc.items) {
     if (item.owner === c.name) {
@@ -667,25 +673,6 @@ async function pickupItems(c, options = {}) {
     }
   }
   if (remaining.length > 0) loc.items = remaining; else delete loc.items;
-  await saveMap();
-}
-
-function reviveMonsters() {
-  const minute = new Date().getMinutes();
-  if (minute % 15 !== 0) return;
-  let changed = false;
-  for (const key in worldMap) {
-    const loc = worldMap[key];
-    if (!loc || !loc.owner || !Array.isArray(loc.monsters)) continue;
-    for (const m of loc.monsters) {
-      if (m.hp <= 0 && m.lastReviveMinute !== minute) {
-        m.hp = hpAtLevel(m.level);
-        m.lastReviveMinute = minute;
-        changed = true;
-      }
-    }
-  }
-  if (changed) saveMap();
 }
 
 async function handleDeath(c, logs, markDirty, queueEvent, dbClient) {
@@ -697,11 +684,10 @@ async function handleDeath(c, logs, markDirty, queueEvent, dbClient) {
       await db.setItemOwner(item.id, null, dbClient);
     }
     const key = `${deathPos.x},${deathPos.y},${deathPos.z}`;
-    const loc = worldMap[key] || {};
-    loc.items = loc.items || [];
+    const loc = ensureWorldLocation(deathPos) || {};
+    loc.items = Array.isArray(loc.items) ? loc.items : [];
     loc.items.push({ ...item, owner: c.name });
     worldMap[key] = loc;
-    await saveMap();
     logs.push('你掉落了一件道具');
   }
   const respawn = c.bindPoint || { x: 0, y: 0, z: 0 };
@@ -1021,30 +1007,23 @@ function countPlayersAtPosition(playersIterable, pos) {
 }
 
 function getLocationInfo(playersIterable, pos) {
-  const key = `${pos.x},${pos.y},${pos.z}`;
-  const loc = worldMap[key];
-  const playersHere = countPlayersAtPosition(playersIterable, pos);
-  if (loc) {
-    const npcs = Array.isArray(loc.npcs) ? loc.npcs.length : 0;
-    const monsters = Array.isArray(loc.monsters) ? loc.monsters.length : 0;
-    return {
-      name: loc.name,
-      level: loc.level || '',
-      owner: loc.owner || '無所屬',
-      population: playersHere + npcs + monsters,
-      description: loc.description || '這個人很懶，什麼都沒寫。',
-      address: pos,
-      returnMark: !!loc.returnMark
-    };
-  }
+  const target =
+    pos && Number.isFinite(pos.x) && Number.isFinite(pos.y) && Number.isFinite(pos.z)
+      ? pos
+      : { x: 0, y: 0, z: 0 };
+  const loc = ensureWorldLocation(target);
+  const address = loc?.address || { x: target.x, y: target.y, z: target.z };
+  const playersHere = countPlayersAtPosition(playersIterable, address);
+  const npcs = Array.isArray(loc?.npcs) ? loc.npcs.length : 0;
+  const monsters = Array.isArray(loc?.monsters) ? loc.monsters.length : 0;
   return {
-    name: '未開拓之地',
-    level: '',
-    owner: '無所屬',
-    population: playersHere,
-    description: '嗚啦呀哈呀哈嗚啦',
-    address: pos,
-    returnMark: false
+    name: loc?.name || '未開拓之地',
+    level: loc?.level != null ? loc.level : '',
+    owner: loc?.owner || '無所屬',
+    population: playersHere + npcs + monsters,
+    description: loc?.description || '這個人很懶，什麼都沒寫。',
+    address,
+    returnMark: !!loc?.returnMark
   };
 }
 
@@ -1111,7 +1090,6 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
     const eventsToPublish = [];
     const queuedEvents = [];
     const outcome = await db.withPlayersTx(participantIds, async client => {
-      reviveMonsters();
       const rows = await db.listPlayers(client);
       const playersMap = new Map();
       const playersByName = new Map();
@@ -1135,6 +1113,72 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
       const c = playersMap.get(req.user.id);
       if (!c) {
         return { status: 400, body: { error: 'character not found' } };
+      }
+
+      const regionCache = new Map();
+      const regionIdToKey = new Map();
+
+      const rememberRegion = (position, region) => {
+        if (!position) return region;
+        const key = locationKeyFromPosition(position);
+        if (!key) return region;
+        regionCache.set(key, region || null);
+        applyRegionToLocation(position, region);
+        if (region?.id) {
+          regionIdToKey.set(region.id, key);
+        }
+        return region;
+      };
+
+      const loadRegion = async position => {
+        if (
+          !position ||
+          typeof position.x !== 'number' ||
+          typeof position.y !== 'number' ||
+          typeof position.z !== 'number'
+        ) {
+          return null;
+        }
+        const key = locationKeyFromPosition(position);
+        if (regionCache.has(key)) return regionCache.get(key);
+        const region = await db.getRegionByCoord(position.x, position.y, position.z, client);
+        return rememberRegion(position, region);
+      };
+
+      const loadRegionMobs = async regionId => {
+        if (!regionId) return [];
+        const mobs = await db.listRegionMobs(regionId, client);
+        const key = regionIdToKey.get(regionId);
+        if (key) {
+          const [x, y, z] = key.split(',').map(Number);
+          const entry = ensureWorldLocation({ x, y, z });
+          if (entry) {
+            mergeDbMonstersIntoLocation(entry, mobs, {
+              attackAtLevel,
+              hpAtLevel,
+              expGainForLevel
+            });
+          }
+        }
+        return mobs;
+      };
+
+      const findRegionsByName = async name => {
+        const results = await db.findRegionsByName(name, client);
+        return results.map(region => {
+          const position = { x: region.x, y: region.y, z: region.z };
+          rememberRegion(position, region);
+          return { region, position };
+        });
+      };
+
+      try {
+        const region = await loadRegion(c.position);
+        if (region?.id) {
+          await loadRegionMobs(region.id);
+        }
+      } catch (err) {
+        console.error('failed to prime region cache', err);
       }
 
       updateStats(c);
@@ -1167,16 +1211,11 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         c,
         users: usersList,
         worldMap,
-        saveMap,
         getLocationInfo: pos => getLocationInfo(playersMap.values(), pos),
         countPlayersAt: pos => countPlayersAtPosition(playersMap.values(), pos),
-        getRegionFromDb: pos => {
-          if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number' || typeof pos.z !== 'number') {
-            return Promise.resolve(null);
-          }
-          return db.getRegionByCoord(pos.x, pos.y, pos.z, client);
-        },
-        listRegionMobsFromDb: regionId => db.listRegionMobs(regionId, client),
+        getRegionFromDb: loadRegion,
+        listRegionMobsFromDb: loadRegionMobs,
+        findRegionCoordsByName: findRegionsByName,
         maybeRespawnMobs: (regionId, options = {}) =>
           db.maybeRespawn(regionId, { now: new Date(), ...options }, client),
         killMobInDb: (mobId, options = {}) =>
@@ -1269,7 +1308,6 @@ app.use((err, req, res, next) => {
 });
 
 async function init() {
-  await loadMap();
   await loadItems();
   await db.init();
   ensureCleanupJob();

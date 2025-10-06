@@ -119,6 +119,21 @@ async function showRegionByQuery(query, ctx, logs) {
         position = { x, y, z };
       }
     }
+    if (!position && typeof ctx.findRegionCoordsByName === 'function') {
+      try {
+        const matches = await ctx.findRegionCoordsByName(query);
+        if (Array.isArray(matches) && matches.length > 0) {
+          if (matches.length === 1) {
+            position = matches[0].position;
+          } else {
+            logs.push('有多個地區使用這個名稱，請改用座標搜尋。');
+            return true;
+          }
+        }
+      } catch (err) {
+        console.error('failed to look up region by name', err);
+      }
+    }
   }
 
   if (!position) return false;

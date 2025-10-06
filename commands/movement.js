@@ -15,6 +15,13 @@ const move = async (ctx, dx, dy, dz, cost, verb, logs) => {
     c.action = Math.max(0, c.action - cost);
     c.lastActionUpdate = Date.now();
   }
+  if (typeof ctx.getRegionFromDb === 'function') {
+    try {
+      await ctx.getRegionFromDb(newPos);
+    } catch (err) {
+      console.error('failed to load region during movement', err);
+    }
+  }
   const info = getLocationInfo(newPos);
   logs.push(`${c.name}${verb}移動，抵達了${info.name}`);
   logs.push('');

@@ -30,9 +30,10 @@ interface.
 Authentication tokens are delivered via an HttpOnly cookie; the client does not need to store them.
 
 ### Data storage
-Player accounts, sessions, and character state live in PostgreSQL (see `schema.sql`).
-World data such as the shared map and item tables remain JSON-backed with queued writes to avoid concurrent corruption; migrate
-them to a transactional database for production deployments.
+Player accounts, sessions, the shared world map, and monster spawns live in PostgreSQL (see `schema.sql`).
+Run `npm run seed:regions` to populate protected/system regions from `seeds/preset_regions.json`, and optionally execute
+`npm run import:map` once to migrate legacy `data/map.json` files into the database. After seeding/importing, the server reads
+and writes all region data directly through Postgres—no JSON fallbacks are required.
 
 ### Seeding system regions
 - Define protected regions in `seeds/preset_regions.json`. Each entry accepts coordinates, name, level, and optional monster definitions. Regions flagged as `is_system` become non-claimable/non-destructible and can expose an `owner_display` label for GM-controlled areas.

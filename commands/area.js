@@ -52,6 +52,7 @@ module.exports = {
         ctx.c.lastActionUpdate = Date.now();
         ctx.markPlayerDirty?.(ctx.c.accountId);
 
+        const dbRegion = ctx.getRegionFromDb ? await ctx.getRegionFromDb(ctx.c.position) : null;
         const info = ctx.getLocationInfo(ctx.c.position);
         const normalizedAreaName = normalizeName(areaName);
         const nameTakenInMap = Object.entries(ctx.worldMap).some(([key, loc]) => {
@@ -60,7 +61,6 @@ module.exports = {
           const [x, y, z] = key.split(',').map(Number);
           return !(x === ctx.c.position.x && y === ctx.c.position.y && z === ctx.c.position.z);
         });
-        const dbRegion = ctx.getRegionFromDb ? await ctx.getRegionFromDb(ctx.c.position) : null;
         const hasDbOwner = dbRegion?.ownerAccountId && dbRegion.ownerAccountId !== ctx.c.accountId;
 
         if (
@@ -213,8 +213,8 @@ module.exports = {
         ctx.c.lastActionUpdate = Date.now();
         ctx.markPlayerDirty?.(ctx.c.accountId);
         const key = `${ctx.c.position.x},${ctx.c.position.y},${ctx.c.position.z}`;
-        const loc = ctx.worldMap[key];
         const region = ctx.getRegionFromDb ? await ctx.getRegionFromDb(ctx.c.position) : null;
+        const loc = ctx.worldMap[key];
         const monsterTaken = await ctx.isMonsterNameTaken(mName);
         const playerTaken = ctx.listPlayersByName(mName).length > 0;
         if (

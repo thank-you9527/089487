@@ -442,6 +442,14 @@ async function attack(cmd, targeted, cost, ctx, logs) {
   c.lastActionUpdate = Date.now();
   ctx.markPlayerDirty?.(c.accountId);
 
+  if (typeof ctx.getRegionFromDb === 'function') {
+    try {
+      await ctx.getRegionFromDb(c.position);
+    } catch (err) {
+      console.error('failed to sync region before combat', err);
+    }
+  }
+
   const locationKey = `${c.position.x},${c.position.y},${c.position.z}`;
   const loc = worldMap[locationKey] || {};
   if (!loc.monsters) loc.monsters = [];

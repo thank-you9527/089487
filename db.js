@@ -880,6 +880,31 @@ async function listRegionMobs(regionId, client) {
   return rows.map(toCamelRegionMob);
 }
 
+async function findRegionsByName(name, client) {
+  const canonical = canonicalize(name);
+  if (!canonical) return [];
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    `SELECT wr.*, p.name AS owner_name
+       FROM world_regions wr
+       LEFT JOIN players p ON p.id = wr.owner_account_id
+      WHERE wr.name_norm = $1`,
+    [canonical]
+  );
+  return rows.map(toCamelRegion);
+}
+
+async function isRegionMobNameTaken(name, client) {
+  const canonical = canonicalize(name);
+  if (!canonical) return false;
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    'SELECT 1 FROM region_mobs WHERE LOWER(name) = $1 LIMIT 1',
+    [canonical]
+  );
+  return rows.length > 0;
+}
+
 function normalizeRegionName(name) {
   if (typeof name !== 'string') return '';
   const trimmed = name.trim();
@@ -1239,6 +1264,8 @@ module.exports = {
   withItemNameLock,
   getRegionByCoord,
   listRegionMobs,
+  findRegionsByName,
+  isRegionMobNameTaken,
   claimRegionByCoord,
   spawnMob,
   killMob,

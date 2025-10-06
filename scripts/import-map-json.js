@@ -60,7 +60,19 @@ async function findOwnerAccountId(name, client) {
 
 async function main() {
   await db.init();
-  const raw = await fs.readFile(MAP_PATH, 'utf8');
+  let raw;
+  try {
+    raw = await fs.readFile(MAP_PATH, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      console.log(`[import-map] ${MAP_PATH} not found; skipping import.`);
+      if (typeof db._pool?.end === 'function') {
+        await db._pool.end();
+      }
+      return;
+    }
+    throw err;
+  }
   const mapData = JSON.parse(raw);
 
   const stats = {
