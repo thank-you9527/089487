@@ -260,13 +260,17 @@ app.use((req, res, next) => {
 
 app.use(express.json({ limit: '1mb' }));
 app.use(cors());
+app.use((req, res, next) => {
+  req.cookies = parseCookies(req);
+  next();
+});
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'landing.html'));
 });
 app.get('/player.html', (req, res) => {
   res.redirect(302, '/');
 });
-app.use(express.static(__dirname));
 
 const worldMap = Object.create(null);
 
@@ -483,6 +487,7 @@ const SECURE_COOKIE =
     ? process.env.COOKIE_SECURE === 'true'
     : process.env.NODE_ENV === 'production';
 
+const AUTH_COOKIE_NAME = 'jwt';
 const COOKIE_BASE = { httpOnly: true, sameSite: 'lax', secure: SECURE_COOKIE, path: '/' };
 const COOKIE_WITH_MAX_AGE = { ...COOKIE_BASE, maxAge: SESSION_TTL_MS };
 const DISABLE_CAPTCHA = process.env.DISABLE_CAPTCHA === 'true';
@@ -490,25 +495,29 @@ const JWT_EXPIRES_IN = '7d';
 const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000));
 
 function parseCookies(req) {
-  const header = req.headers.cookie;
+  const header = req.headers?.cookie;
   if (!header) return {};
   return header.split(';').reduce((acc, part) => {
     const [rawKey, ...rest] = part.split('=');
     if (!rawKey) return acc;
     const key = rawKey.trim();
-    const value = rest.join('=').trim();
     if (!key) return acc;
-    acc[key] = decodeURIComponent(value || '');
+    const value = rest.join('=').trim();
+    try {
+      acc[key] = decodeURIComponent(value || '');
+    } catch (err) {
+      acc[key] = value || '';
+    }
     return acc;
   }, {});
 }
 
 function setAuthCookie(res, token) {
-  res.cookie('jwt', token, COOKIE_WITH_MAX_AGE);
+  res.cookie(AUTH_COOKIE_NAME, token, COOKIE_WITH_MAX_AGE);
 }
 
 function clearAuthCookie(res) {
-  res.clearCookie('jwt', COOKIE_BASE);
+  res.clearCookie(AUTH_COOKIE_NAME, COOKIE_BASE);
 }
 
 const itemsPath = path.join(__dirname, 'data', 'items.json');
@@ -529,67 +538,56 @@ async function loadItems() {
 
 async function auth(req, res, next) {
   try {
-    const cookies = parseCookies(req);
-    const token = cookies.jwt;
-    if (!token) return res.status(401).json({ error: 'unauthorized' });
+    const token = req.cookies?.[AUTH_COOKIE_NAME];
+    if (!token) {
+      return res.status(401).json({ ok: false, error: 'no-cookie' });
+    }
     let payload;
     try {
       payload = jwt.verify(token, SECRET);
     } catch (err) {
-      clearAuthCookie(res);
-      const code = err?.name === 'TokenExpiredError' ? 'session-expired' : 'bad-token';
-      return res.status(401).json({ error: code });
+      return res.status(401).json({ ok: false, error: 'bad-jwt' });
     }
-    const { sub, jti, username } = payload;
-    if (!sub || !jti || !username) {
-      clearAuthCookie(res);
-      return res.status(401).json({ error: 'bad-token' });
+    const accountId = payload?.account_id;
+    const sessionId = payload?.session_id;
+    if (!accountId || !sessionId) {
+      return res.status(401).json({ ok: false, error: 'bad-jwt' });
     }
-    const session = await db.getSession(jti);
-    if (!session) {
-      clearAuthCookie(res);
-      return res.status(401).json({ error: 'session-gone' });
-    }
-    req.user = { id: sub, sessionId: jti, username };
+    const username = payload?.username || null;
+    req.accountId = accountId;
+    req.sessionId = sessionId;
+    req.account = { id: accountId, username };
+    req.user = { id: accountId, sessionId, username };
     req.username = username;
-    req.sessionRow = session;
     return next();
   } catch (err) {
     console.error('auth middleware failed', err);
-    return res.status(500).json({ error: 'internal error' });
+    return res.status(500).json({ ok: false, error: 'server-error' });
   }
 }
 
 async function ensureActiveSession(req, res, next) {
   try {
-    const session = req.sessionRow;
+    if (!req.sessionId) {
+      return res.status(401).json({ ok: false, error: 'no-session' });
+    }
+    const session = await db.getSession(req.sessionId);
     if (!session) {
-      clearAuthCookie(res);
-      return res.status(401).json({ error: 'unauthorized' });
+      return res.status(401).json({ ok: false, error: 'session-missing' });
     }
-    const now = Date.now();
-    let failureCode = 'unauthorized';
-    if (session?.expires_at) {
-      const expiresAt = new Date(session.expires_at).getTime();
-      if (Number.isFinite(expiresAt) && expiresAt <= now) {
-        failureCode = 'session-expired';
-      }
+    const expiresAt = session?.expires_at ? new Date(session.expires_at).getTime() : null;
+    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+      return res.status(401).json({ ok: false, error: 'session-expired' });
     }
-    if (failureCode === 'unauthorized' && session?.last_seen && SESSION_IDLE_TIMEOUT_MS > 0) {
-      const lastSeen = new Date(session.last_seen).getTime();
-      if (Number.isFinite(lastSeen) && lastSeen + SESSION_IDLE_TIMEOUT_MS <= now) {
-        failureCode = 'session-timeout';
-      }
-    }
-    const touched = await db.touchSession(session.session_id);
+    const touched = await db.touchSession(req.sessionId);
     if (!touched) {
-      clearAuthCookie(res);
-      return res.status(401).json({ error: failureCode });
+      return res.status(401).json({ ok: false, error: 'session-missing' });
     }
+    req.sessionRow = session;
     return next();
   } catch (err) {
     console.error('ensureActiveSession failed', err);
-    return res.status(503).json({ error: 'session-check-failed' });
+    return res.status(503).json({ ok: false, error: 'auth-db-failed' });
   }
 }
 
@@ -841,9 +839,13 @@ app.post('/api/login', async (req, res) => {
       : req.ip;
     try {
       const { sessionId } = await db.createSession(account.id, { userAgent, ip });
-      const token = jwt.sign({ sub: account.id, jti: sessionId, username: account.username }, SECRET, {
-        expiresIn: JWT_EXPIRES_IN
-      });
+      const token = jwt.sign(
+        { account_id: account.id, session_id: sessionId, username: account.username },
+        SECRET,
+        {
+          expiresIn: JWT_EXPIRES_IN
+        }
+      );
       setAuthCookie(res, token);
       return res.status(204).end();
     } catch (err) {
@@ -858,7 +860,7 @@ app.post('/api/login', async (req, res) => {
 
 app.post('/api/logout', auth, ensureActiveSession, async (req, res) => {
   try {
-    await db.deleteSession(req.user.sessionId);
+    await db.deleteSession(req.sessionId);
   } catch (err) {
     console.error('deleteSession failed', err);
   }
@@ -866,18 +868,35 @@ app.post('/api/logout', auth, ensureActiveSession, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/logout-beacon', auth, ensureActiveSession, async (req, res) => {
+app.post('/api/logout-beacon', async (req, res) => {
+  const token = req.cookies?.[AUTH_COOKIE_NAME];
+  if (!token) {
+    clearAuthCookie(res);
+    return res.status(204).end();
+  }
   try {
-    await db.deleteSession(req.user.sessionId);
+    const payload = jwt.verify(token, SECRET);
+    const sessionId = payload?.session_id;
+    if (sessionId) {
+      await db.deleteSession(sessionId);
+    }
   } catch (err) {
     console.error('logout-beacon failed', err);
   }
   clearAuthCookie(res);
-  res.json({ ok: true });
+  res.status(204).end();
 });
 
 app.post('/api/ping', auth, ensureActiveSession, (req, res) => {
   res.json({ ok: true });
+});
+
+app.get('/api/whoami', auth, ensureActiveSession, (req, res) => {
+  res.json({
+    ok: true,
+    accountId: req.accountId,
+    username: req.account?.username || null
+  });
 });
 
 app.get('/api/db-ping', async (req, res) => {
@@ -1113,6 +1132,13 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
   const commandText = (req.body?.command ?? '').trim();
   if (!commandText) {
     return res.status(400).json({ ok: false, error: 'bad-command' });
+  }
+
+  if (/^help$/i.test(commandText)) {
+    const lines = [
+      '看看 / 看路 / 前進 / 後退 / 歐拉 / 捏捏 / 蛋雕 …'
+    ];
+    return res.json(safeJson({ ok: true, lines }));
   }
 
   try {
@@ -1364,9 +1390,13 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
       when: new Date().toISOString(),
       stack: err?.stack || String(err)
     });
-    return res.status(500).json({ ok: false, error: 'command-failed' });
+    return res.status(500).json(
+      safeJson({ ok: false, error: 'server-error', trace: err?.message || 'command-failed' })
+    );
   }
 });
+
+app.use(express.static(__dirname));
 
 app.use((err, req, res, next) => {
   console.error(`[${req?.id || '-'}]`, err?.stack || err);

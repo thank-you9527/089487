@@ -91,12 +91,16 @@ async function handleUnauthorizedResponse(res) {
   if (res.status !== 401) return false;
   const data = await res.json().catch(() => ({}));
   const code = data?.error;
-  if (code === 'session-timeout') {
-    handleSessionExpired('已閒置登出，請重新登入');
-  } else if (code === 'session-expired') {
-    handleSessionExpired('登入已過期，請重新登入');
-  } else if (code === 'session-gone' || code === 'bad-token' || code === 'unauthorized') {
-    handleSessionExpired('登入已失效，請重新登入');
+  const messages = {
+    'session-expired': '登入已過期，請重新登入',
+    'session-missing': '登入已失效，請重新登入',
+    'no-session': '登入已失效，請重新登入',
+    'bad-jwt': '登入資訊異常，請重新登入',
+    'no-cookie': '尚未登入或登入已失效，請重新登入',
+    'session-timeout': '已閒置登出，請重新登入'
+  };
+  if (code && messages[code]) {
+    handleSessionExpired(messages[code]);
   } else {
     handleSessionExpired();
   }
