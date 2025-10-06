@@ -75,11 +75,70 @@ function createRateLimiter({ windowMs, refillPerWindow, burst }) {
   };
 }
 
+function normalizeValue(value) {
+  if (value == null) return value;
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || Number.isNaN(value)) return String(value);
+    return value;
+  }
+  if (typeof value === 'bigint') {
+    const asNumber = Number(value);
+    return Number.isSafeInteger(asNumber) ? asNumber : value.toString();
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (Buffer.isBuffer(value)) return value.toString('base64');
+  if (Array.isArray(value)) return value.map(normalizeValue);
+  if (value instanceof Map) {
+    const out = {};
+    for (const [key, val] of value.entries()) {
+      if (typeof key === 'string') out[key] = normalizeValue(val);
+    }
+    return out;
+  }
+  if (value instanceof Set) return Array.from(value, normalizeValue);
+  if (typeof value === 'object') {
+    if (typeof value.toJSON === 'function') {
+      return normalizeValue(value.toJSON());
+    }
+    const out = {};
+    for (const [key, val] of Object.entries(value)) {
+      if (val === undefined) continue;
+      out[key] = normalizeValue(val);
+    }
+    return out;
+  }
+  return String(value);
+}
+
+function normalizeOutput(payload) {
+  const normalized = normalizeValue(payload);
+  if (normalized == null) return {};
+  if (Array.isArray(normalized)) return { result: normalized };
+  if (typeof normalized === 'object') return normalized;
+  return { result: normalized };
+}
+
+function safeStringify(value) {
+  return JSON.stringify(normalizeValue(value));
+}
+
+function safeJson(value) {
+  return JSON.parse(safeStringify(value));
+}
+
+function normalizeEvent(event) {
+  const normalized = normalizeOutput(event);
+  const payload = normalizeValue(normalized.payload ?? {});
+  return { ...normalized, payload };
+}
+
 function streamEvent(res, event) {
   if (!res || !event) return;
-  const id = event.id ?? event.event_id;
-  const kind = event.kind || 'message';
-  const data = JSON.stringify(event.payload ?? {});
+  const safeEvent = normalizeEvent(event);
+  const id = safeEvent.id ?? safeEvent.event_id;
+  const kind = safeEvent.kind || 'message';
+  const data = safeStringify(safeEvent.payload ?? {});
   const parts = [];
   if (id != null) parts.push(`id: ${id}`);
   parts.push(`event: ${kind}`);
@@ -199,8 +258,8 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use(express.json({ limit: '1mb' }));
 app.use(cors());
-app.use(express.json());
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'landing.html'));
 });
@@ -530,8 +589,7 @@ async function ensureActiveSession(req, res, next) {
     return next();
   } catch (err) {
     console.error('ensureActiveSession failed', err);
-    clearAuthCookie(res);
-    return res.status(401).json({ error: 'unauthorized' });
+    return res.status(503).json({ error: 'session-check-failed' });
   }
 }
 
@@ -1052,18 +1110,17 @@ function findCharactersByNameIn(playersIterable, name) {
 }
 
 app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
-  const { command } = req.body || {};
-  const trimmed = typeof command === 'string' ? command.trim() : '';
-  if (!trimmed) {
-    return res.status(400).json({ error: 'invalid command' });
+  const commandText = (req.body?.command ?? '').trim();
+  if (!commandText) {
+    return res.status(400).json({ ok: false, error: 'bad-command' });
   }
 
   try {
     const participants = new Set([req.user.id]);
     let targetPlayerId = null;
 
-    if (trimmed.startsWith('歐拉/')) {
-      const targetName = trimmed.slice(3).trim();
+    if (commandText.startsWith('歐拉/')) {
+      const targetName = commandText.slice(3).trim();
       if (targetName) {
         const matches = await db.findPlayersByNameInsensitive(targetName);
         const target = matches.find(player => player.id !== req.user.id);
@@ -1072,10 +1129,10 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
           participants.add(target.id);
         }
       }
-    } else if (trimmed === '歐拉') {
+    } else if (commandText === '歐拉') {
       const attackerRow = await db.getPlayer(req.user.id);
       if (!attackerRow) {
-        return res.status(400).json({ error: 'character not found' });
+        return res.status(400).json({ ok: false, error: 'character not found' });
       }
       const { rows } = await db._pool.query(
         'SELECT id FROM players WHERE x=$1 AND y=$2 AND z=$3 AND id <> $4',
@@ -1192,7 +1249,7 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
       await pickupItems(c, { queueEvent: queueEventFn, dbClient: client });
 
       if (c.status === '鼠了' && c.hp > 0) c.status = '醒著';
-      if (c.status === '眼睛閉著' && trimmed !== '歐歐睏') c.status = '醒著';
+      if (c.status === '眼睛閉著' && commandText !== '歐歐睏') c.status = '醒著';
 
       const logs = [];
       const dirtyPlayers = new Set([req.user.id]);
@@ -1249,7 +1306,7 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         queueEvent: queueEventFn
       };
 
-      await dispatchCommands(trimmed, context, logs);
+      await dispatchCommands(commandText, context, logs);
 
       for (const id of dirtyPlayers) {
         const player = playersMap.get(id);
@@ -1268,7 +1325,7 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
       const selfEvent = await db.appendEvent(
         req.user.id,
         'command',
-        { command: trimmed, block, logs: block },
+        { command: commandText, block, logs: block },
         client
       );
       eventsToPublish.push({ playerId: req.user.id, event: selfEvent });
@@ -1276,7 +1333,7 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         const targetEvent = await db.appendEvent(
           targetPlayerId,
           'command',
-          { command: trimmed, block, logs: block },
+          { command: commandText, block, logs: block },
           client
         );
         eventsToPublish.push({ playerId: targetPlayerId, event: targetEvent });
@@ -1286,7 +1343,11 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
     });
 
     const status = outcome?.status ?? 500;
-    const body = outcome?.body ?? { error: 'server error' };
+    const normalized = normalizeOutput(outcome?.body ?? {});
+    const responsePayload =
+      status >= 200 && status < 300
+        ? { ok: true, ...normalized }
+        : { ok: false, ...normalized };
     if (Array.isArray(eventsToPublish)) {
       for (const entry of eventsToPublish) {
         if (entry?.playerId && entry.event) {
@@ -1294,10 +1355,16 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         }
       }
     }
-    res.status(status).json(body);
+    return res.status(status).json(safeJson(responsePayload));
   } catch (err) {
-    console.error('command handler failed', err);
-    res.status(500).json({ error: 'server error' });
+    console.error('[command] error', {
+      accountId: req.user?.id,
+      username: req.user?.username,
+      cmd: commandText,
+      when: new Date().toISOString(),
+      stack: err?.stack || String(err)
+    });
+    return res.status(500).json({ ok: false, error: 'command-failed' });
   }
 });
 

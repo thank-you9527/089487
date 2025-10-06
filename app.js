@@ -356,28 +356,46 @@ on(sendBtn, 'click', async () => {
       body: JSON.stringify({ command: text }),
       credentials: 'include'
     });
-    if (res.ok) {
-      const data = await res.json();
-      const candidate = data.block ?? data.lines ?? data.logs;
-      if (Array.isArray(candidate)) {
-        if (candidate.every(item => Array.isArray(item))) {
-          candidate.forEach(block => appendBlock(block));
-        } else {
-          appendBlock(candidate);
-        }
-      } else if (Array.isArray(data?.blocks)) {
-        data.blocks.forEach(block => appendBlock(block));
-      } else if (typeof data?.message === 'string') {
-        appendBlock(data.message);
-      }
-    } else if (res.status === 429) {
+    if (res.status === 401) {
+      appendBlock('登入已過期，請重新登入。');
+      await handleUnauthorizedResponse(res);
+      return;
+    }
+    if (res.status === 429) {
       const data = await res.json().catch(() => ({}));
       const retry = data?.retryAfter;
       appendBlock(retry ? `操作太快，請於 ${retry} 秒後再試。` : '操作太快，請稍後再試。');
-    } else if (await handleUnauthorizedResponse(res)) {
       return;
-    } else {
-      appendBlock('指令送出失敗，請稍後再試。');
+    }
+    if (!res.ok) {
+      const textResp = await res.text().catch(() => '');
+      const message = textResp
+        ? `伺服器錯誤(${res.status})：${textResp}`
+        : `伺服器錯誤(${res.status})：請稍後再試`;
+      appendBlock(message);
+      return;
+    }
+    const data = await res.json().catch(() => null);
+    if (!data) {
+      appendBlock('伺服器回傳格式錯誤，請稍後再試。');
+      return;
+    }
+    if (data.ok === false) {
+      const message = typeof data.error === 'string' ? data.error : '指令執行失敗';
+      appendBlock(`指令失敗：${message}`);
+      return;
+    }
+    const candidate = data.block ?? data.lines ?? data.logs ?? data.result;
+    if (Array.isArray(candidate)) {
+      if (candidate.every(item => Array.isArray(item))) {
+        candidate.forEach(block => appendBlock(block));
+      } else {
+        appendBlock(candidate);
+      }
+    } else if (Array.isArray(data?.blocks)) {
+      data.blocks.forEach(block => appendBlock(block));
+    } else if (typeof data?.message === 'string') {
+      appendBlock(data.message);
     }
   } catch (e) {
     appendBlock('無法連線到伺服器');
