@@ -190,6 +190,77 @@ describe('combat command', () => {
     expect(events.filter(e => e.kind === 'combat')).toHaveLength(2);
   });
 
+  test('killing a monster records DB kill and queues events', async () => {
+    const restoreRandom = stubRandom([0.5, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]);
+    const logs = [];
+    const events = [];
+    const defeated = [];
+    const ctx = {
+      c: {
+        accountId: 'attacker',
+        name: 'Hero',
+        action: 10,
+        maxAction: 10,
+        position: { x: 0, y: 0, z: 0 },
+        morality: 40,
+        level: 20,
+        attack: 50,
+        hp: 100,
+        maxHp: 100
+      },
+      users: [],
+      worldMap: {
+        '0,0,0': {
+          owner: 'Rival',
+          level: 5,
+          monsters: [{ id: 'mob-1', name: 'Slime', level: 5, hp: 10, maxHp: 10 }]
+        }
+      },
+      handleDeath: jest.fn(),
+      fmt: n => n,
+      monsterDrop: jest.fn().mockImplementation(async monster => {
+        defeated.push({ ...monster });
+      }),
+      markPlayerDirty: jest.fn(),
+      queueEvent: entry => events.push(entry),
+      getRegionFromDb: jest.fn().mockResolvedValue({ id: 'region-1', name: 'Test' }),
+      maybeRespawnMobs: jest.fn().mockResolvedValue({ ok: true, mobs: [] }),
+      listRegionMobsFromDb: jest.fn().mockResolvedValue([
+        {
+          id: 'mob-1',
+          name: 'Slime',
+          level: 5,
+          atk: 12,
+          hpMax: 30,
+          alive: true,
+          isGuardian: false
+        }
+      ]),
+      killMobInDb: jest.fn().mockResolvedValue({
+        ok: true,
+        mob: { id: 'mob-1', name: 'Slime', level: 5, isGuardian: false, respawnAt: '2024-01-01T00:00:00.000Z' },
+        region: { id: 'region-1', isSystem: false }
+      })
+    };
+    ctx.listPlayersByName = () => [];
+
+    try {
+      await combat.prefixHandlers[0].handler('歐拉/Slime', ctx, logs);
+    } finally {
+      restoreRandom();
+    }
+
+    expect(defeated[0]?.id || defeated[0]?.name).toBeTruthy();
+    expect(ctx.killMobInDb).toHaveBeenCalledWith('mob-1', expect.objectContaining({ respawnDelayMs: expect.any(Number), now: expect.any(Date) }));
+    expect(ctx.monsterDrop).toHaveBeenCalled();
+    expect(ctx.worldMap['0,0,0'].monsters).toHaveLength(0);
+    expect(events.some(event => event.kind === 'mob_killed')).toBe(true);
+    const killEvent = events.find(event => event.kind === 'mob_killed');
+    expect(killEvent.payload.regionId).toBe('region-1');
+    expect(killEvent.payload.mob.id).toBe('mob-1');
+    expect(logs.some(line => line.includes('被擊敗了'))).toBe(true);
+  });
+
   test('stacked brave items boost damage up to fifty percent', async () => {
     const restoreRandom = stubRandom([0.9, 0.1, 0.0, 0.0, 0.99, 0.99]);
     const defender = {

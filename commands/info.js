@@ -1,4 +1,5 @@
 const { canonicalize } = require('../lib/names');
+const { mergeDbMonstersIntoLocation, applyRespawnedMobs } = require('../lib/regions');
 
 function parseCoordinateQuery(raw) {
   if (typeof raw !== 'string') return null;
@@ -23,9 +24,46 @@ async function buildLocationInfo(ctx, position) {
     const region = await loadRegion(position);
     if (!region) return fallbackInfo;
 
+    if (region.id && typeof ctx.maybeRespawnMobs === 'function') {
+      try {
+        const respawn = await ctx.maybeRespawnMobs(region.id);
+        if (respawn?.mobs?.length) {
+          const key = `${position.x},${position.y},${position.z}`;
+          const mapEntry = ctx.worldMap?.[key];
+          const updates = mapEntry ? applyRespawnedMobs(mapEntry, respawn.mobs, ctx) : [];
+          if (updates.length && typeof ctx.queueEvent === 'function' && ctx.c?.accountId) {
+            for (const mob of updates) {
+              ctx.queueEvent({
+                playerId: ctx.c.accountId,
+                kind: 'mob_respawned',
+                payload: {
+                  regionId: region.id,
+                  mob: {
+                    id: mob.id || null,
+                    name: mob.name,
+                    level: mob.level,
+                    isGuardian: !!mob.guardian
+                  }
+                }
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error('failed to refresh mobs before showing region', err);
+      }
+    }
+
     let mobs = [];
     if (typeof ctx.listRegionMobsFromDb === 'function') {
       mobs = await ctx.listRegionMobsFromDb(region.id);
+      if (mobs?.length) {
+        const key = `${position.x},${position.y},${position.z}`;
+        const mapEntry = ctx.worldMap?.[key];
+        if (mapEntry) {
+          mergeDbMonstersIntoLocation(mapEntry, mobs, ctx);
+        }
+      }
     }
 
     const key = `${position.x},${position.y},${position.z}`;

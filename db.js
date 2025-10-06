@@ -1003,6 +1003,114 @@ async function claimRegionByCoord(x, y, z, accountId, attributes = {}, client) {
   return withTx(perform);
 }
 
+function resolveNow(value) {
+  if (value instanceof Date) return value;
+  if (typeof value === 'number') {
+    const byNumber = new Date(value);
+    if (!Number.isNaN(byNumber.getTime())) return byNumber;
+  }
+  if (typeof value === 'string') {
+    const byString = new Date(value);
+    if (!Number.isNaN(byString.getTime())) return byString;
+  }
+  return new Date();
+}
+
+async function killMob(mobId, options = {}, client) {
+  if (!mobId) {
+    return { ok: false, reason: 'missing-mob' };
+  }
+  const nowDate = resolveNow(options.now);
+  const nowIso = nowDate.toISOString();
+  const delayMs = Number(options.respawnDelayMs);
+  const hasDelay = Number.isFinite(delayMs) && delayMs > 0;
+  const respawnAt = hasDelay ? new Date(nowDate.getTime() + delayMs).toISOString() : null;
+  const runner = exec(client);
+
+  const update = await runner.query(
+    `UPDATE region_mobs rm
+        SET alive = FALSE,
+            respawn_at = $2,
+            updated_at = $1
+      FROM world_regions wr
+     WHERE rm.id = $3
+       AND rm.alive = TRUE
+       AND wr.id = rm.region_id
+     RETURNING rm.*, wr.is_system AS region_is_system, wr.id AS region_id, wr.owner_account_id AS region_owner_account_id`,
+    [nowIso, respawnAt, mobId]
+  );
+
+  if (update.rows.length === 0) {
+    const existing = await runner.query(
+      `SELECT rm.*, wr.is_system AS region_is_system, wr.id AS region_id, wr.owner_account_id AS region_owner_account_id
+         FROM region_mobs rm
+         JOIN world_regions wr ON wr.id = rm.region_id
+        WHERE rm.id = $1
+        LIMIT 1`,
+      [mobId]
+    );
+    if (existing.rows.length === 0) {
+      return { ok: false, reason: 'not-found' };
+    }
+    return {
+      ok: false,
+      reason: 'already-dead',
+      mob: toCamelRegionMob(existing.rows[0]),
+      region: {
+        id: existing.rows[0].region_id,
+        isSystem: existing.rows[0].region_is_system,
+        ownerAccountId: existing.rows[0].region_owner_account_id
+      }
+    };
+  }
+
+  const row = update.rows[0];
+  const mob = toCamelRegionMob(row);
+  const region = {
+    id: row.region_id,
+    isSystem: row.region_is_system,
+    ownerAccountId: row.region_owner_account_id
+  };
+
+  if (mob.isGuardian && !region.isSystem && region.id) {
+    await runner.query(
+      `UPDATE world_regions
+          SET owner_account_id = NULL,
+              name = $2,
+              name_norm = $3,
+              updated_at = $1
+        WHERE id = $4`,
+      [nowIso, '廢墟', normalizeRegionName('廢墟'), region.id]
+    );
+  }
+
+  return { ok: true, mob, region };
+}
+
+async function maybeRespawn(regionId, options = {}, client) {
+  if (!regionId) {
+    return { ok: false, reason: 'missing-region', mobs: [] };
+  }
+  const nowDate = resolveNow(options.now);
+  const nowIso = nowDate.toISOString();
+  const runner = exec(client);
+
+  const result = await runner.query(
+    `UPDATE region_mobs
+        SET alive = TRUE,
+            respawn_at = NULL,
+            updated_at = $2
+      WHERE region_id = $1
+        AND alive = FALSE
+        AND respawn_at IS NOT NULL
+        AND respawn_at <= $2
+      RETURNING *`,
+    [regionId, nowIso]
+  );
+
+  return { ok: true, mobs: result.rows.map(toCamelRegionMob) };
+}
+
 async function spawnMob(regionId, attrs = {}, client) {
   if (!regionId) {
     return { ok: false, reason: 'missing-region' };
@@ -1119,5 +1227,7 @@ module.exports = {
   listRegionMobs,
   claimRegionByCoord,
   spawnMob,
+  killMob,
+  maybeRespawn,
   _pool: pool
 };

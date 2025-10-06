@@ -1,5 +1,10 @@
 const { runAttack, runFriendlyOnly } = require('./attack');
 const { aggregateItemEffects } = require('../lib/itemEffects');
+const {
+  mergeDbMonstersIntoLocation,
+  applyRespawnedMobs,
+  convertDbMobToMonster
+} = require('../lib/regions');
 
 const roundInt = value => {
   const n = Number(value);
@@ -227,8 +232,32 @@ async function executeStrike(attacker, defender, ctx) {
   };
 }
 
-async function handleMonsterDefeat(monster, loc, ctx, logs) {
+function computeRespawnDelay(monster, loc) {
+  const baseLevel = Number.isFinite(monster?.level)
+    ? Math.max(1, Math.round(monster.level))
+    : Number.isFinite(loc?.level)
+    ? Math.max(1, Math.round(loc.level))
+    : 1;
+  const delayMs = baseLevel * 6000; // 6 seconds per level
+  return Math.min(30 * 60 * 1000, Math.max(5 * 60 * 1000, delayMs));
+}
+
+async function handleMonsterDefeat(monster, loc, ctx, logs, regionInfo) {
   await ctx.monsterDrop(monster, ctx.c, loc, logs);
+  const now = new Date();
+  let killResult = null;
+
+  if (monster.id && typeof ctx.killMobInDb === 'function') {
+    try {
+      killResult = await ctx.killMobInDb(monster.id, {
+        now,
+        respawnDelayMs: computeRespawnDelay(monster, loc)
+      });
+    } catch (err) {
+      console.error('failed to record mob kill', err);
+    }
+  }
+
   if (monster.guardian && loc.owner) {
     const prev = loc.name;
     const preservedLevel =
@@ -240,6 +269,42 @@ async function handleMonsterDefeat(monster, loc, ctx, logs) {
     loc.description = `守護神殞落後，${prev}再度化為廢墟。`;
     loc.monsters = [];
     delete loc.returnMark;
+  }
+
+  if (!monster.guardian) {
+    loc.monsters = Array.isArray(loc.monsters)
+      ? loc.monsters.filter(entry => {
+          if (!entry) return false;
+          if (monster.id && entry.id) {
+            return entry.id !== monster.id;
+          }
+          return entry.name !== monster.name;
+        })
+      : [];
+  }
+
+  if (killResult?.ok) {
+    const payloadMob = killResult.mob || convertDbMobToMonster(monster, ctx);
+    if (payloadMob && typeof ctx.queueEvent === 'function') {
+      ctx.queueEvent({
+        playerId: ctx.c.accountId,
+        kind: 'mob_killed',
+        payload: {
+          regionId: killResult.region?.id || regionInfo?.id || null,
+          mob: {
+            id: payloadMob.id || monster.id || null,
+            name: payloadMob.name || monster.name,
+            level: payloadMob.level || monster.level || null,
+            isGuardian: !!(payloadMob.isGuardian ?? monster.guardian),
+            respawnAt: payloadMob.respawnAt || null
+          }
+        }
+      });
+    }
+  }
+
+  if (killResult?.ok === false && killResult.reason === 'already-dead' && killResult.mob) {
+    applyRespawnedMobs(loc, [killResult.mob], ctx);
   }
 }
 
@@ -377,6 +442,53 @@ async function attack(cmd, targeted, cost, ctx, logs) {
   const loc = worldMap[locationKey] || {};
   if (!loc.monsters) loc.monsters = [];
 
+  let regionInfo = null;
+  try {
+    if (typeof ctx.getRegionFromDb === 'function') {
+      regionInfo = await ctx.getRegionFromDb(c.position);
+    }
+  } catch (err) {
+    console.error('failed to load region before combat', err);
+  }
+
+  if (regionInfo?.id) {
+    if (typeof ctx.maybeRespawnMobs === 'function') {
+      try {
+        const respawn = await ctx.maybeRespawnMobs(regionInfo.id);
+        if (respawn?.mobs?.length) {
+          const updates = applyRespawnedMobs(loc, respawn.mobs, ctx);
+          if (updates.length && typeof ctx.queueEvent === 'function') {
+            for (const mob of updates) {
+              ctx.queueEvent({
+                playerId: ctx.c.accountId,
+                kind: 'mob_respawned',
+                payload: {
+                  regionId: regionInfo.id,
+                  mob: {
+                    id: mob.id || null,
+                    name: mob.name,
+                    level: mob.level,
+                    isGuardian: !!mob.guardian
+                  }
+                }
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error('failed to respawn mobs before combat', err);
+      }
+    }
+    if (typeof ctx.listRegionMobsFromDb === 'function') {
+      try {
+        const dbMobs = await ctx.listRegionMobsFromDb(regionInfo.id);
+        mergeDbMonstersIntoLocation(loc, dbMobs, ctx);
+      } catch (err) {
+        console.error('failed to sync mobs before combat', err);
+      }
+    }
+  }
+
   let selection = null;
   if (targeted) {
     const [, targetNameRaw] = cmd.split('/');
@@ -446,7 +558,6 @@ async function attack(cmd, targeted, cost, ctx, logs) {
         messages
       })
     });
-    await ctx.saveMap();
     return;
   }
 
@@ -481,7 +592,6 @@ async function attack(cmd, targeted, cost, ctx, logs) {
         messages
       })
     });
-    await ctx.saveMap();
     return;
   }
 
@@ -533,7 +643,7 @@ async function attack(cmd, targeted, cost, ctx, logs) {
       if (opponent.type === 'player') {
         await ctx.handleDeath(opponent.entity, logs);
       } else {
-        await handleMonsterDefeat(opponent.entity, loc, ctx, logs);
+        await handleMonsterDefeat(opponent.entity, loc, ctx, logs, regionInfo);
       }
     }
 
@@ -600,7 +710,6 @@ async function attack(cmd, targeted, cost, ctx, logs) {
     });
   }
 
-  await ctx.saveMap();
 }
 
 module.exports = {

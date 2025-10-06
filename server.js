@@ -1177,6 +1177,10 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
           return db.getRegionByCoord(pos.x, pos.y, pos.z, client);
         },
         listRegionMobsFromDb: regionId => db.listRegionMobs(regionId, client),
+        maybeRespawnMobs: (regionId, options = {}) =>
+          db.maybeRespawn(regionId, { now: new Date(), ...options }, client),
+        killMobInDb: (mobId, options = {}) =>
+          db.killMob(mobId, { now: new Date(), ...options }, client),
         formatLocationInfo,
         formatCharacterInfo,
         listPlayersByName: name => playersByName.get(normalizeName(name)) || [],
