@@ -3,6 +3,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const { addItemToInventory } = require('./lib/inventory');
 const { canonicalize, validateItemBaseName } = require('./lib/names');
@@ -259,11 +260,8 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: '1mb' }));
+app.use(cookieParser());
 app.use(cors());
-app.use((req, res, next) => {
-  req.cookies = parseCookies(req);
-  next();
-});
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'landing.html'));
@@ -494,24 +492,6 @@ const DISABLE_CAPTCHA = process.env.DISABLE_CAPTCHA === 'true';
 const JWT_EXPIRES_IN = '7d';
 const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000));
 
-function parseCookies(req) {
-  const header = req.headers?.cookie;
-  if (!header) return {};
-  return header.split(';').reduce((acc, part) => {
-    const [rawKey, ...rest] = part.split('=');
-    if (!rawKey) return acc;
-    const key = rawKey.trim();
-    if (!key) return acc;
-    const value = rest.join('=').trim();
-    try {
-      acc[key] = decodeURIComponent(value || '');
-    } catch (err) {
-      acc[key] = value || '';
-    }
-    return acc;
-  }, {});
-}
-
 function setAuthCookie(res, token) {
   res.cookie(AUTH_COOKIE_NAME, token, COOKIE_WITH_MAX_AGE);
 }
@@ -536,34 +516,71 @@ async function loadItems() {
   }
 }
 
-async function auth(req, res, next) {
+function clearAuthContext(req) {
+  req.accountId = null;
+  req.sessionId = null;
+  req.account = null;
+  req.user = null;
+  req.username = null;
+}
+
+function authenticateRequest(req) {
+  clearAuthContext(req);
+  const token = req.cookies?.[AUTH_COOKIE_NAME];
+  if (!token) {
+    return { ok: false, error: 'no-cookie' };
+  }
+  let payload;
   try {
-    const token = req.cookies?.[AUTH_COOKIE_NAME];
-    if (!token) {
-      return res.status(401).json({ ok: false, error: 'no-cookie' });
+    payload = jwt.verify(token, SECRET);
+  } catch (err) {
+    return { ok: false, error: 'bad-jwt' };
+  }
+  const accountId = payload?.account_id;
+  const sessionId = payload?.session_id;
+  if (!accountId || !sessionId) {
+    return { ok: false, error: 'bad-jwt' };
+  }
+  const username = payload?.username || null;
+  req.accountId = accountId;
+  req.sessionId = sessionId;
+  req.account = { id: accountId, username };
+  req.user = { id: accountId, sessionId, username };
+  req.username = username;
+  return { ok: true };
+}
+
+async function requireAuth(req, res, next) {
+  try {
+    const result = authenticateRequest(req);
+    if (!result.ok) {
+      req.authError = result.error;
+      return res.status(401).json({ ok: false, error: result.error });
     }
-    let payload;
-    try {
-      payload = jwt.verify(token, SECRET);
-    } catch (err) {
-      return res.status(401).json({ ok: false, error: 'bad-jwt' });
-    }
-    const accountId = payload?.account_id;
-    const sessionId = payload?.session_id;
-    if (!accountId || !sessionId) {
-      return res.status(401).json({ ok: false, error: 'bad-jwt' });
-    }
-    const username = payload?.username || null;
-    req.accountId = accountId;
-    req.sessionId = sessionId;
-    req.account = { id: accountId, username };
-    req.user = { id: accountId, sessionId, username };
-    req.username = username;
+    req.authError = null;
     return next();
   } catch (err) {
     console.error('auth middleware failed', err);
+    req.authError = 'server-error';
+    clearAuthContext(req);
     return res.status(500).json({ ok: false, error: 'server-error' });
   }
+}
+
+function authOptional(req, res, next) {
+  try {
+    const result = authenticateRequest(req);
+    if (!result.ok) {
+      req.authError = result.error;
+    } else {
+      req.authError = null;
+    }
+  } catch (err) {
+    console.error('authOptional middleware failed', err);
+    req.authError = 'server-error';
+    clearAuthContext(req);
+  }
+  next();
 }
 
 async function ensureActiveSession(req, res, next) {
@@ -858,7 +875,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-app.post('/api/logout', auth, ensureActiveSession, async (req, res) => {
+app.post('/api/logout', requireAuth, ensureActiveSession, async (req, res) => {
   try {
     await db.deleteSession(req.sessionId);
   } catch (err) {
@@ -887,11 +904,16 @@ app.post('/api/logout-beacon', async (req, res) => {
   res.status(204).end();
 });
 
-app.post('/api/ping', auth, ensureActiveSession, (req, res) => {
+app.post('/api/ping', requireAuth, ensureActiveSession, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/whoami', auth, ensureActiveSession, (req, res) => {
+app.get('/api/whoami', authOptional, (req, res) => {
+  if (!req.accountId) {
+    const error = req.authError || 'no-session';
+    const status = error === 'server-error' ? 500 : 401;
+    return res.status(status).json({ ok: false, error });
+  }
   res.json({
     ok: true,
     accountId: req.accountId,
@@ -912,7 +934,7 @@ app.get('/api/db-ping', async (req, res) => {
   }
 });
 
-app.get('/api/events', auth, ensureActiveSession, (req, res) => {
+app.get('/api/events', requireAuth, ensureActiveSession, (req, res) => {
   res.set({
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -970,7 +992,7 @@ app.get('/api/events', auth, ensureActiveSession, (req, res) => {
   })();
 });
 
-app.get('/api/character', auth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
+app.get('/api/character', requireAuth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
   try {
     const result = await db.withPlayerTx(req.user.id, async client => {
       const row = await db.getPlayer(req.user.id, client);
@@ -1003,7 +1025,7 @@ app.get('/api/character', auth, ensureActiveSession, RATE_LIMITER, async (req, r
   }
 });
 
-app.post('/api/character', auth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
+app.post('/api/character', requireAuth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
   const { name } = req.body;
   if (!nameRegex.test(name)) {
     return res.status(400).json({ error: 'invalid name' });
@@ -1128,7 +1150,7 @@ function findCharactersByNameIn(playersIterable, name) {
   return matches;
 }
 
-app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
+app.post('/api/command', requireAuth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
   const commandText = (req.body?.command ?? '').trim();
   if (!commandText) {
     return res.status(400).json({ ok: false, error: 'bad-command' });
