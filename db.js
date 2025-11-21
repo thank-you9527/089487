@@ -11,7 +11,11 @@ const SESSION_TTL_HOURS = Math.max(1, Number(process.env.SESSION_TTL_HOURS ?? DE
 const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
 
 const DEFAULT_IDLE_TIMEOUT_SEC = 30 * 60; // 30 minutes
-const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Number(process.env.SESSION_IDLE_TIMEOUT_SEC ?? DEFAULT_IDLE_TIMEOUT_SEC));
+const MIN_IDLE_TIMEOUT_SEC = 30 * 60; // enforce at least 30 minutes even if misconfigured
+const rawIdleTimeoutSec = Number(process.env.SESSION_IDLE_TIMEOUT_SEC ?? DEFAULT_IDLE_TIMEOUT_SEC);
+const SESSION_IDLE_TIMEOUT_SEC = Number.isFinite(rawIdleTimeoutSec)
+  ? Math.max(MIN_IDLE_TIMEOUT_SEC, rawIdleTimeoutSec)
+  : MIN_IDLE_TIMEOUT_SEC;
 const SESSION_IDLE_TIMEOUT_MS = SESSION_IDLE_TIMEOUT_SEC * 1000;
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
