@@ -792,6 +792,9 @@ app.get('/api/captcha', (req, res) => {
 
 app.post('/api/register', async (req, res) => {
   const { username, password, captchaId, captcha } = req.body;
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: 'invalid input' });
+  }
   if (!userRegex.test(username) || !passRegex.test(password)) {
     return res.status(400).json({ error: 'invalid input' });
   }
@@ -834,6 +837,9 @@ app.post('/api/register', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: 'invalid input' });
+  }
   try {
     let account = null;
     try {
@@ -1020,8 +1026,11 @@ app.get('/api/character', requireAuth, ensureActiveSession, RATE_LIMITER, async 
       bio: result.bio || '看屁看'
     });
   } catch (err) {
+    const status = err?.code === '42P01' || err?.code === '08001' || err?.code === 'ECONNREFUSED'
+      ? 503
+      : 500;
     console.error('failed to load character', err);
-    res.status(500).json({ error: 'internal error' });
+    res.status(status).json({ error: status === 503 ? 'db-unavailable' : 'internal error' });
   }
 });
 
