@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS world_regions (
   name               TEXT NOT NULL,
   name_norm          TEXT NOT NULL,
   level              INT  NOT NULL,
-  owner_account_id   UUID,
+  owner_account_id   TEXT REFERENCES players(id),
   owner_display      TEXT,
   is_system          BOOLEAN NOT NULL DEFAULT FALSE,
   is_claimable       BOOLEAN NOT NULL DEFAULT TRUE,
@@ -132,6 +132,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_world_regions_coords ON world_regions(x, y
 CREATE UNIQUE INDEX IF NOT EXISTS idx_world_regions_name_norm ON world_regions(name_norm);
 CREATE INDEX IF NOT EXISTS idx_region_mobs_region ON region_mobs(region_id);
 CREATE INDEX IF NOT EXISTS idx_region_mobs_region_guardian ON region_mobs(region_id, is_guardian);
+
+-- Align owner_account_id with players.id (TEXT) to keep joins consistent
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'world_regions'
+       AND column_name = 'owner_account_id'
+       AND data_type <> 'text'
+  ) THEN
+    BEGIN
+      ALTER TABLE world_regions DROP CONSTRAINT IF EXISTS world_regions_owner_account_id_fkey;
+      ALTER TABLE world_regions ALTER COLUMN owner_account_id TYPE TEXT USING owner_account_id::text;
+      ALTER TABLE world_regions ADD CONSTRAINT world_regions_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES players(id);
+    EXCEPTION WHEN others THEN
+      RAISE NOTICE 'skipped owner_account_id type alignment: %', SQLERRM;
+    END;
+  END IF;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION trg_world_regions_touch()
 RETURNS TRIGGER AS $$

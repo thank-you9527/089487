@@ -274,7 +274,7 @@ async function init() {
     name               TEXT NOT NULL,
     name_norm          TEXT NOT NULL,
     level              INT  NOT NULL,
-    owner_account_id   UUID,
+    owner_account_id   TEXT REFERENCES players(id),
     owner_display      TEXT,
     is_system          BOOLEAN NOT NULL DEFAULT FALSE,
     is_claimable       BOOLEAN NOT NULL DEFAULT TRUE,
@@ -315,6 +315,27 @@ async function init() {
   CREATE UNIQUE INDEX IF NOT EXISTS idx_world_regions_name_norm ON world_regions(name_norm);
   CREATE INDEX IF NOT EXISTS idx_region_mobs_region ON region_mobs(region_id);
   CREATE INDEX IF NOT EXISTS idx_region_mobs_region_guardian ON region_mobs(region_id, is_guardian);
+
+  -- Align owner_account_id with players.id (TEXT) so joins do not fail
+  DO $$
+  BEGIN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_name = 'world_regions'
+         AND column_name = 'owner_account_id'
+         AND data_type <> 'text'
+    ) THEN
+      BEGIN
+        ALTER TABLE world_regions DROP CONSTRAINT IF EXISTS world_regions_owner_account_id_fkey;
+        ALTER TABLE world_regions ALTER COLUMN owner_account_id TYPE TEXT USING owner_account_id::text;
+        ALTER TABLE world_regions ADD CONSTRAINT world_regions_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES players(id);
+      EXCEPTION WHEN others THEN
+        -- allow pg-mem and legacy installs without halting init
+        RAISE NOTICE 'skipped owner_account_id type alignment: %', SQLERRM;
+      END;
+    END IF;
+  END;
+  $$;
   CREATE OR REPLACE FUNCTION trg_world_regions_touch()
   RETURNS TRIGGER AS $$
   BEGIN
@@ -892,7 +913,7 @@ async function getRegionByCoord(x, y, z, client) {
   const { rows } = await runner.query(
     `SELECT wr.*, p.name AS owner_name
        FROM world_regions wr
-       LEFT JOIN players p ON p.id = wr.owner_account_id
+       LEFT JOIN players p ON p.id::text = wr.owner_account_id::text
       WHERE wr.x = $1 AND wr.y = $2 AND wr.z = $3
       LIMIT 1`,
     coords
@@ -921,7 +942,7 @@ async function findRegionsByName(name, client) {
   const { rows } = await runner.query(
     `SELECT wr.*, p.name AS owner_name
        FROM world_regions wr
-       LEFT JOIN players p ON p.id = wr.owner_account_id
+       LEFT JOIN players p ON p.id::text = wr.owner_account_id::text
       WHERE wr.name_norm = $1`,
     [canonical]
   );
