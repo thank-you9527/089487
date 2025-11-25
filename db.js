@@ -454,6 +454,27 @@ async function withPlayersTx(ids, fn) {
   }
   const client = await pool.connect();
   const locks = [];
+  const originalQuery = client.query;
+  let firstSqlErrorLogged = false;
+  client.query = async (...args) => {
+    const text = typeof args[0] === 'string' ? args[0] : args[0]?.text;
+    try {
+      return await originalQuery.apply(client, args);
+    } catch (err) {
+      if (!firstSqlErrorLogged) {
+        firstSqlErrorLogged = true;
+        console.error('[players-tx] SQL error', {
+          playerIds: uniqueIds,
+          sql: sanitizeSql(text || ''),
+          code: err?.code,
+          detail: err?.detail,
+          hint: err?.hint,
+          message: err?.message
+        });
+      }
+      throw err;
+    }
+  };
   try {
     await client.query('BEGIN');
     for (const id of uniqueIds) {
@@ -472,6 +493,7 @@ async function withPlayersTx(ids, fn) {
     }
     throw err;
   } finally {
+    client.query = originalQuery;
     for (let i = locks.length - 1; i >= 0; i -= 1) {
       const [k1, k2] = locks[i];
       try {
@@ -482,6 +504,14 @@ async function withPlayersTx(ids, fn) {
     }
     client.release();
   }
+}
+
+function getSessionTimeouts() {
+  return {
+    ttlMs: SESSION_TTL_MS,
+    idleTimeoutSec: SESSION_IDLE_TIMEOUT_SEC,
+    idleTimeoutMs: SESSION_IDLE_TIMEOUT_MS
+  };
 }
 
 async function withPlayerTx(playerId, fn) {
@@ -1274,5 +1304,6 @@ module.exports = {
   spawnMob,
   killMob,
   maybeRespawn,
+  getSessionTimeouts,
   _pool: pool
 };
