@@ -1,20 +1,20 @@
-const logContainer = document.getElementById('logContainer');
-const logsDiv = document.getElementById('logs');
-const sendBtn = document.getElementById('sendBtn');
-const commandInput = document.getElementById('commandInput');
-const searchToggle = document.getElementById('searchToggle');
-const searchInput = document.getElementById('searchInput');
-const sidebar = document.getElementById('sidebar');
-const sidebarToggle = document.getElementById('sidebarToggle');
-const logoutBtn = document.getElementById('logoutBtn');
-const profileBtn = document.getElementById('profileBtn');
-const logManageBtn = document.getElementById('logManageBtn');
-const sidebarMain = document.getElementById('sidebarMain');
-const logManager = document.getElementById('logManager');
-const clearLogsBtn = document.getElementById('clearLogsBtn');
-const exportLogsBtn = document.getElementById('exportLogsBtn');
-const backBtn = document.getElementById('backBtn');
-const downloadBtn = document.getElementById('downloadBtn');
+const qs = (selector, root = document) => root.querySelector(selector);
+const on = (el, event, handler) => el && el.addEventListener(event, handler);
+
+const logContainer = qs('#logContainer');
+const logsDiv = qs('#logs');
+const sendBtn = qs('#sendBtn');
+const commandInput = qs('#commandInput');
+const searchToggle = qs('#searchToggle');
+const searchInput = qs('#searchInput');
+const sidebar = qs('#sidebar');
+const sidebarToggle = qs('#sidebarToggle');
+const logoutBtn = qs('#logoutBtn');
+const logManageBtn = qs('#logManageBtn');
+const sidebarMain = qs('#sidebarMain');
+const clearLogsBtn = qs('#clearLogsBtn');
+const exportLogsBtn = qs('#exportLogsBtn');
+const downloadBtn = qs('#downloadBtn');
 const currentUser = localStorage.getItem('currentUser');
 const logKey = currentUser ? `logs_${currentUser}` : 'logs';
 const storedLogs = JSON.parse(localStorage.getItem(logKey) || '[]');
@@ -91,12 +91,16 @@ async function handleUnauthorizedResponse(res) {
   if (res.status !== 401) return false;
   const data = await res.json().catch(() => ({}));
   const code = data?.error;
-  if (code === 'session-timeout') {
-    handleSessionExpired('已閒置登出，請重新登入');
-  } else if (code === 'session-expired') {
-    handleSessionExpired('登入已過期，請重新登入');
-  } else if (code === 'session-gone' || code === 'bad-token' || code === 'unauthorized') {
-    handleSessionExpired('登入已失效，請重新登入');
+  const messages = {
+    'session-expired': '登入已過期，請重新登入',
+    'session-missing': '登入已失效，請重新登入',
+    'no-session': '登入已失效，請重新登入',
+    'bad-jwt': '登入資訊異常，請重新登入',
+    'no-cookie': '尚未登入或登入已失效，請重新登入',
+    'session-timeout': '已閒置登出，請重新登入'
+  };
+  if (code && messages[code]) {
+    handleSessionExpired(messages[code]);
   } else {
     handleSessionExpired();
   }
@@ -346,7 +350,7 @@ function initialMessage() {
   }
 }
 
-sendBtn.addEventListener('click', async () => {
+on(sendBtn, 'click', async () => {
   const text = commandInput.value.trim();
   if (!text) return;
   try {
@@ -356,28 +360,46 @@ sendBtn.addEventListener('click', async () => {
       body: JSON.stringify({ command: text }),
       credentials: 'include'
     });
-    if (res.ok) {
-      const data = await res.json();
-      const candidate = data.block ?? data.lines ?? data.logs;
-      if (Array.isArray(candidate)) {
-        if (candidate.every(item => Array.isArray(item))) {
-          candidate.forEach(block => appendBlock(block));
-        } else {
-          appendBlock(candidate);
-        }
-      } else if (Array.isArray(data?.blocks)) {
-        data.blocks.forEach(block => appendBlock(block));
-      } else if (typeof data?.message === 'string') {
-        appendBlock(data.message);
-      }
-    } else if (res.status === 429) {
+    if (res.status === 401) {
+      appendBlock('登入已過期，請重新登入。');
+      await handleUnauthorizedResponse(res);
+      return;
+    }
+    if (res.status === 429) {
       const data = await res.json().catch(() => ({}));
       const retry = data?.retryAfter;
       appendBlock(retry ? `操作太快，請於 ${retry} 秒後再試。` : '操作太快，請稍後再試。');
-    } else if (await handleUnauthorizedResponse(res)) {
       return;
-    } else {
-      appendBlock('指令送出失敗，請稍後再試。');
+    }
+    if (!res.ok) {
+      const textResp = await res.text().catch(() => '');
+      const message = textResp
+        ? `伺服器錯誤(${res.status})：${textResp}`
+        : `伺服器錯誤(${res.status})：請稍後再試`;
+      appendBlock(message);
+      return;
+    }
+    const data = await res.json().catch(() => null);
+    if (!data) {
+      appendBlock('伺服器回傳格式錯誤，請稍後再試。');
+      return;
+    }
+    if (data.ok === false) {
+      const message = typeof data.error === 'string' ? data.error : '指令執行失敗';
+      appendBlock(`指令失敗：${message}`);
+      return;
+    }
+    const candidate = data.block ?? data.lines ?? data.logs ?? data.result;
+    if (Array.isArray(candidate)) {
+      if (candidate.every(item => Array.isArray(item))) {
+        candidate.forEach(block => appendBlock(block));
+      } else {
+        appendBlock(candidate);
+      }
+    } else if (Array.isArray(data?.blocks)) {
+      data.blocks.forEach(block => appendBlock(block));
+    } else if (typeof data?.message === 'string') {
+      appendBlock(data.message);
     }
   } catch (e) {
     appendBlock('無法連線到伺服器');
@@ -386,7 +408,7 @@ sendBtn.addEventListener('click', async () => {
   }
 });
 
-searchToggle.addEventListener('click', () => {
+on(searchToggle, 'click', () => {
   if (searchInput.classList.contains('hidden')) {
     searchInput.classList.remove('hidden');
     searchInput.focus();
@@ -410,7 +432,7 @@ searchToggle.addEventListener('click', () => {
   }
 });
 
-logContainer.addEventListener('scroll', () => {
+on(logContainer, 'scroll', () => {
   if (logContainer.scrollTop === 0 && loadedCount < logs.length) {
     loadedCount += 10;
     renderLogs();
@@ -418,15 +440,11 @@ logContainer.addEventListener('scroll', () => {
   }
 });
 
-sidebarToggle.addEventListener('click', () => {
-  sidebar.classList.toggle('show');
+on(sidebarToggle, 'click', () => {
+  sidebar?.classList.toggle('show');
 });
 
-profileBtn.addEventListener('click', () => {
-  window.location.href = 'player.html';
-});
-
-logoutBtn.addEventListener('click', async () => {
+on(logoutBtn, 'click', async () => {
   if (confirm('是否登出？')) {
     try {
       const res = await fetch('/api/logout', { method: 'POST', credentials: 'include' });
@@ -446,18 +464,21 @@ logoutBtn.addEventListener('click', async () => {
   }
 });
 
-logManageBtn.addEventListener('click', () => {
-  sidebarMain.classList.add('hidden');
-  logManager.classList.remove('hidden');
+on(logManageBtn, 'click', () => {
+  if (!sidebarMain) return;
+  const opened = sidebarMain.classList.toggle('tools-open');
+  if (!opened && downloadBtn) {
+    downloadBtn.classList.add('hidden');
+  }
 });
 
-backBtn.addEventListener('click', () => {
-  logManager.classList.add('hidden');
-  sidebarMain.classList.remove('hidden');
-  downloadBtn.classList.add('hidden');
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !sidebarMain?.classList.contains('tools-open')) return;
+  sidebarMain.classList.remove('tools-open');
+  downloadBtn?.classList.add('hidden');
 });
 
-clearLogsBtn.addEventListener('click', () => {
+on(clearLogsBtn, 'click', () => {
   if (confirm('確定清除文字資料？')) {
     localStorage.removeItem(logKey);
     logs = [];
@@ -465,7 +486,7 @@ clearLogsBtn.addEventListener('click', () => {
   }
 });
 
-exportLogsBtn.addEventListener('click', () => {
+on(exportLogsBtn, 'click', () => {
   const content = logs
     .map((l) => {
       const header = `[${new Date(l.date).toLocaleString()}]`;
@@ -475,6 +496,7 @@ exportLogsBtn.addEventListener('click', () => {
     .join('\n');
   const blob = new Blob([content], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
+  if (!downloadBtn) return;
   downloadBtn.classList.remove('hidden');
   downloadBtn.onclick = () => {
     const a = document.createElement('a');

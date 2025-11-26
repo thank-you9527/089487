@@ -1,0 +1,46 @@
+[
+  {
+    "coordinates": [0, 0, 0],
+    "name": "起源之塔",
+    "level": 20,
+    "is_system": true,
+    "is_claimable": false,
+    "is_destructible": false,
+    "owner_display": "GM",
+    "monsters": [
+      {
+        "name": "起源守護神",
+        "level": 35,
+        "is_guardian": true
+      },
+      {
+        "name": "塔衛・長戟兵",
+        "level": 22
+      },
+      {
+        "name": "塔衛・弓手",
+        "level": 21
+      }
+    ]
+  },
+  {
+    "coordinates": [2, -1, 0],
+    "name": "王都廣場",
+    "level": 15,
+    "is_system": true,
+    "is_claimable": false,
+    "is_destructible": false,
+    "owner_display": "王城近衛",
+    "monsters": [
+      {
+        "name": "近衛長",
+        "level": 28,
+        "is_guardian": true
+      },
+      {
+        "name": "近衛士兵",
+        "level": 18
+      }
+    ]
+  }
+]

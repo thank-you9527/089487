@@ -37,6 +37,7 @@ describe('API routes', () => {
     expect(get.status).toBe(200);
     const unauthorized = await request(app).get('/api/character');
     expect(unauthorized.status).toBe(401);
+    expect(unauthorized.body).toEqual({ ok: false, error: 'no-cookie' });
   });
 
   test('login accepts canonicalized username casing', async () => {
@@ -118,12 +119,12 @@ test('enforces single session and expires missing sessions', async () => {
 
   const token = cookie2.split('=')[1];
   const payload = jwt.verify(token, process.env.JWT_SECRET);
-  await db.deleteSession(payload.jti);
+  await db.deleteSession(payload.session_id);
 
   const command = await request(app)
     .post('/api/command')
     .set('Cookie', cookie2)
     .send({ command: '前進' });
   expect(command.status).toBe(401);
-  expect(command.body).toEqual({ error: 'unauthorized' });
+  expect(command.body).toEqual({ ok: false, error: 'session-missing' });
 });

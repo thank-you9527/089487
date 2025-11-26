@@ -9,8 +9,20 @@ interface.
    - `export DATABASE_URL=postgres://user:pass@host:5432/dbname`
    - `export JWT_SECRET=your-secret`
    - `export SESSION_TTL_HOURS=24` *(optional, defaults to 24)*
-   - `export SESSION_IDLE_TIMEOUT_SEC=600` *(optional, defaults to 600 seconds)*
+   - `export SESSION_IDLE_TIMEOUT_SEC=1800` *(optional, defaults to 1800 seconds / 30 minutes and never less than that)*
+   - `export COOKIE_SECURE=true` *(optional; defaults to `true` when `NODE_ENV=production`, otherwise `false`)*
+   - `export DISABLE_CAPTCHA=false` *(optional; set to `true` locally to skip CAPTCHA checks while developing)*
    (Windows use `set` instead of `export`.)
+   You can also place these values in a `.env` file if you use a manager like [direnv](https://direnv.net/) or `dotenv-cli`.
+
+   **Local development example**
+   ```bash
+   NODE_ENV=development
+   COOKIE_SECURE=false
+   DISABLE_CAPTCHA=true
+   DATABASE_URL=postgres://user:pass@localhost:5432/game
+   JWT_SECRET=replace-this-with-a-random-string
+   ```
 3. Start the server: `npm start`
 4. Open `http://localhost:3000/` in your browser.
    The landing page offers links to register or log in before entering the game.
@@ -18,14 +30,19 @@ interface.
 Authentication tokens are delivered via an HttpOnly cookie; the client does not need to store them.
 
 ### Data storage
-Player accounts, sessions, and character state live in PostgreSQL (see `schema.sql`).
-World data such as the shared map and item tables remain JSON-backed with queued writes to avoid concurrent corruption; migrate
-them to a transactional database for production deployments.
+Player accounts, sessions, the shared world map, and monster spawns live in PostgreSQL (see `schema.sql`).
+Run `npm run seed:regions` to populate protected/system regions from `seeds/preset_regions.json`, and optionally execute
+`npm run import:map` once to migrate legacy `data/map.json` files into the database. After seeding/importing, the server reads
+and writes all region data directly through Postgres—no JSON fallbacks are required.
+
+### Seeding system regions
+- Define protected regions in `seeds/preset_regions.json`. Each entry accepts coordinates, name, level, and optional monster definitions. Regions flagged as `is_system` become non-claimable/non-destructible and can expose an `owner_display` label for GM-controlled areas.
+- Run `npm run seed:regions` to upsert the presets into PostgreSQL. The script is idempotent, so you can rerun it whenever the seed file changes.
 
 ### Observability & operations
 - **Real-time events** – Clients open `GET /api/events` (Server-Sent Events) to receive combat logs and system updates instantly. The stream accepts `Last-Event-ID`/`sinceId` to backfill the latest 200 events and emits keep-alives every 25 seconds to stay proxy-friendly.
 - **Rate limiting** – Authenticated API routes enforce a sliding-window bucket of 3 commands per second (burst 6) per account and IP. Responses expose `X-RateLimit-*` headers and return `429 { "error": "rate-limited" }` when exceeded.
-- **Session lifecycle** – Sessions last up to `SESSION_TTL_HOURS` (default 24) and expire after `SESSION_IDLE_TIMEOUT_SEC` (default 600) seconds of inactivity. The client sends `/api/ping` heartbeats while the page is open and posts to `/api/logout-beacon` when the tab closes so single-login enforcement releases promptly.
+- **Session lifecycle** – Sessions last up to `SESSION_TTL_HOURS` (default 24) and expire after `SESSION_IDLE_TIMEOUT_SEC` (default 1800) seconds of inactivity. The client sends `/api/ping` heartbeats while the page is open and posts to `/api/logout-beacon` when the tab closes so single-login enforcement releases promptly.
 - **Slow-query logging** – Database calls slower than 200 ms (500 ms for event backfills) log `[slow-sql]` with the statement snippet to aid tuning.
 - **Event retention** – An hourly background job wins an advisory lock before deleting batches of read events older than 30 days, logging the number of rows purged.
 

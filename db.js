@@ -11,7 +11,11 @@ const SESSION_TTL_HOURS = Math.max(1, Number(process.env.SESSION_TTL_HOURS ?? DE
 const SESSION_TTL_MS = SESSION_TTL_HOURS * 60 * 60 * 1000;
 
 const DEFAULT_IDLE_TIMEOUT_SEC = 30 * 60; // 30 minutes
-const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Number(process.env.SESSION_IDLE_TIMEOUT_SEC ?? DEFAULT_IDLE_TIMEOUT_SEC));
+const MIN_IDLE_TIMEOUT_SEC = 30 * 60; // enforce at least 30 minutes even if misconfigured
+const rawIdleTimeoutSec = Number(process.env.SESSION_IDLE_TIMEOUT_SEC ?? DEFAULT_IDLE_TIMEOUT_SEC);
+const SESSION_IDLE_TIMEOUT_SEC = Number.isFinite(rawIdleTimeoutSec)
+  ? Math.max(MIN_IDLE_TIMEOUT_SEC, rawIdleTimeoutSec)
+  : MIN_IDLE_TIMEOUT_SEC;
 const SESSION_IDLE_TIMEOUT_MS = SESSION_IDLE_TIMEOUT_SEC * 1000;
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -73,6 +77,7 @@ if (typeof pool.on === 'function') {
 const toCamel = row => {
   if (!row) return row;
   const map = {
+    account_id: 'accountId',
     day_age: 'dayAge',
     hp_max: 'hpMax',
     action_max: 'actionMax',
@@ -91,6 +96,7 @@ const toCamel = row => {
 
 const toSnake = obj => {
   const map = {
+    accountId: 'account_id',
     dayAge: 'day_age',
     hpMax: 'hp_max',
     actionMax: 'action_max',
@@ -117,6 +123,27 @@ const itemFieldMap = {
   deleted_at: 'deletedAt'
 };
 
+const regionFieldMap = {
+  name_norm: 'nameNorm',
+  owner_account_id: 'ownerAccountId',
+  owner_display: 'ownerDisplay',
+  is_system: 'isSystem',
+  is_claimable: 'isClaimable',
+  is_destructible: 'isDestructible',
+  created_at: 'createdAt',
+  updated_at: 'updatedAt',
+  owner_name: 'ownerName'
+};
+
+const regionMobFieldMap = {
+  region_id: 'regionId',
+  is_guardian: 'isGuardian',
+  hp_max: 'hpMax',
+  respawn_at: 'respawnAt',
+  created_at: 'createdAt',
+  updated_at: 'updatedAt'
+};
+
 function toCamelItem(row) {
   if (!row) return null;
   const result = { id: row.id, prefix: row.prefix, level: row.level, name: row.base_name };
@@ -139,6 +166,26 @@ function toCamelItem(row) {
   return result;
 }
 
+function toCamelRegion(row) {
+  if (!row) return null;
+  const result = {};
+  for (const key in row) {
+    const mapped = regionFieldMap[key] || key;
+    result[mapped] = row[key];
+  }
+  return result;
+}
+
+function toCamelRegionMob(row) {
+  if (!row) return null;
+  const result = {};
+  for (const key in row) {
+    const mapped = regionMobFieldMap[key] || key;
+    result[mapped] = row[key];
+  }
+  return result;
+}
+
 const exec = client => client || pool;
 
 async function init() {
@@ -151,7 +198,7 @@ async function init() {
       }
     }
   }
-  const itemIdDefault = IS_PG_MEM ? '' : ' DEFAULT gen_random_uuid()';
+  const uuidDefault = IS_PG_MEM ? '' : ' DEFAULT gen_random_uuid()';
   const ddl = `
   CREATE TABLE IF NOT EXISTS accounts (
     id            TEXT PRIMARY KEY,
@@ -162,6 +209,7 @@ async function init() {
   );
   CREATE TABLE IF NOT EXISTS players (
     id                 TEXT PRIMARY KEY,
+    account_id         TEXT,
     name               TEXT NOT NULL,
     status             TEXT NOT NULL DEFAULT '醒著',
     identity           TEXT NOT NULL DEFAULT '探求者',
@@ -209,7 +257,7 @@ async function init() {
     CONSTRAINT one_active_session UNIQUE (account_id)
   );
   CREATE TABLE IF NOT EXISTS items (
-    id             UUID PRIMARY KEY${itemIdDefault},
+    id             UUID PRIMARY KEY${uuidDefault},
     base_name      TEXT NOT NULL,
     base_name_norm TEXT NOT NULL,
     prefix         TEXT NOT NULL,
@@ -221,8 +269,44 @@ async function init() {
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at     TIMESTAMPTZ
   );
+  CREATE TABLE IF NOT EXISTS world_regions (
+    id                 UUID PRIMARY KEY${uuidDefault},
+    x                  INT  NOT NULL,
+    y                  INT  NOT NULL,
+    z                  INT  NOT NULL,
+    name               TEXT NOT NULL,
+    name_norm          TEXT NOT NULL,
+    level              INT  NOT NULL,
+    owner_account_id   TEXT REFERENCES accounts(id),
+    owner_display      TEXT,
+    is_system          BOOLEAN NOT NULL DEFAULT FALSE,
+    is_claimable       BOOLEAN NOT NULL DEFAULT TRUE,
+    is_destructible    BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT world_regions_system_guardrails
+      CHECK (NOT is_system OR (owner_account_id IS NULL AND is_claimable = FALSE AND is_destructible = FALSE)),
+    CONSTRAINT world_regions_name_norm_lower CHECK (name_norm = lower(name_norm))
+  );
+  CREATE TABLE IF NOT EXISTS region_mobs (
+    id            UUID PRIMARY KEY${uuidDefault},
+    region_id     UUID NOT NULL REFERENCES world_regions(id),
+    name          TEXT NOT NULL,
+    is_guardian   BOOLEAN NOT NULL DEFAULT FALSE,
+    level         INT NOT NULL,
+    hp_max        INT NOT NULL,
+    atk           INT NOT NULL,
+    alive         BOOLEAN NOT NULL DEFAULT TRUE,
+    respawn_at    TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  ALTER TABLE world_regions
+    ADD COLUMN IF NOT EXISTS owner_display TEXT;
   CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
   CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
+  CREATE INDEX IF NOT EXISTS idx_players_account ON players(account_id);
   CREATE INDEX IF NOT EXISTS idx_players_pos ON players(x, y, z);
   CREATE INDEX IF NOT EXISTS idx_events_player ON events(player_id, is_read, id DESC);
   CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id);
@@ -231,6 +315,112 @@ async function init() {
     WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_items_owner ON items(owner_id) WHERE deleted_at IS NULL;
   CREATE INDEX IF NOT EXISTS idx_items_maker ON items(maker_id);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_world_regions_coords ON world_regions(x, y, z);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_world_regions_name_norm ON world_regions(name_norm);
+  CREATE INDEX IF NOT EXISTS idx_region_mobs_region ON region_mobs(region_id);
+  CREATE INDEX IF NOT EXISTS idx_region_mobs_region_guardian ON region_mobs(region_id, is_guardian);
+
+  -- Align player/account ownership columns to avoid join type mismatches
+  DO $$
+  DECLARE
+    account_type text;
+  BEGIN
+    SELECT data_type INTO account_type
+    FROM information_schema.columns
+    WHERE table_name = 'accounts'
+      AND column_name = 'id'
+    LIMIT 1;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'players' AND column_name = 'account_id'
+    ) THEN
+      EXECUTE format('ALTER TABLE players ADD COLUMN account_id %s', account_type);
+    END IF;
+
+    BEGIN
+      EXECUTE 'UPDATE players SET account_id = id WHERE account_id IS NULL';
+      EXECUTE 'ALTER TABLE players DROP CONSTRAINT IF EXISTS players_account_id_fkey';
+      EXECUTE format('ALTER TABLE players ALTER COLUMN account_id TYPE %s USING account_id::%s', account_type, account_type);
+      EXECUTE 'ALTER TABLE players ADD CONSTRAINT players_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id)';
+    EXCEPTION WHEN others THEN
+      RAISE NOTICE 'skipped players.account_id alignment: %', SQLERRM;
+    END;
+
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'world_regions' AND column_name = 'owner_account_id'
+    ) THEN
+      BEGIN
+        EXECUTE 'ALTER TABLE world_regions DROP CONSTRAINT IF EXISTS world_regions_owner_account_id_fkey';
+        EXECUTE format(
+          'ALTER TABLE world_regions ALTER COLUMN owner_account_id TYPE %s USING owner_account_id::%s',
+          account_type,
+          account_type
+        );
+        EXECUTE 'ALTER TABLE world_regions ADD CONSTRAINT world_regions_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES accounts(id)';
+      EXCEPTION WHEN others THEN
+        -- allow pg-mem and legacy installs without halting init
+        RAISE NOTICE 'skipped owner_account_id type alignment: %', SQLERRM;
+      END;
+    END IF;
+  END;
+  $$;
+  CREATE OR REPLACE FUNCTION trg_world_regions_touch()
+  RETURNS TRIGGER AS $$
+  BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+  END;
+  $$ LANGUAGE plpgsql;
+  CREATE OR REPLACE FUNCTION trg_region_mobs_touch()
+  RETURNS TRIGGER AS $$
+  BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+  END;
+  $$ LANGUAGE plpgsql;
+  CREATE OR REPLACE FUNCTION trg_world_regions_protect_system()
+  RETURNS TRIGGER AS $$
+  BEGIN
+    IF OLD.is_system THEN
+      IF NEW.is_system IS DISTINCT FROM OLD.is_system THEN
+        RAISE EXCEPTION 'system regions cannot toggle is_system flag';
+      END IF;
+      IF NEW.owner_account_id IS DISTINCT FROM OLD.owner_account_id
+         OR NEW.is_claimable IS DISTINCT FROM OLD.is_claimable
+         OR NEW.is_destructible IS DISTINCT FROM OLD.is_destructible
+         OR NEW.x IS DISTINCT FROM OLD.x
+         OR NEW.y IS DISTINCT FROM OLD.y
+         OR NEW.z IS DISTINCT FROM OLD.z
+         OR NEW.name IS DISTINCT FROM OLD.name
+         OR NEW.name_norm IS DISTINCT FROM OLD.name_norm
+         OR NEW.level IS DISTINCT FROM OLD.level THEN
+        RAISE EXCEPTION 'system regions have protected fields';
+      END IF;
+    END IF;
+    RETURN NEW;
+  END;
+  $$ LANGUAGE plpgsql;
+  DO $$
+  BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_world_regions_touch_row') THEN
+      CREATE TRIGGER trg_world_regions_touch_row
+        BEFORE UPDATE ON world_regions
+        FOR EACH ROW EXECUTE FUNCTION trg_world_regions_touch();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_world_regions_protect_system_row') THEN
+      CREATE TRIGGER trg_world_regions_protect_system_row
+        BEFORE UPDATE ON world_regions
+        FOR EACH ROW EXECUTE FUNCTION trg_world_regions_protect_system();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_region_mobs_touch_row') THEN
+      CREATE TRIGGER trg_region_mobs_touch_row
+        BEFORE UPDATE ON region_mobs
+        FOR EACH ROW EXECUTE FUNCTION trg_region_mobs_touch();
+    END IF;
+  END;
+  $$;
   `;
   await pool.query(ddl);
   await pool.query(
@@ -315,6 +505,27 @@ async function withPlayersTx(ids, fn) {
   }
   const client = await pool.connect();
   const locks = [];
+  const originalQuery = client.query;
+  let firstSqlErrorLogged = false;
+  client.query = async (...args) => {
+    const text = typeof args[0] === 'string' ? args[0] : args[0]?.text;
+    try {
+      return await originalQuery.apply(client, args);
+    } catch (err) {
+      if (!firstSqlErrorLogged) {
+        firstSqlErrorLogged = true;
+        console.error('[players-tx] SQL error', {
+          playerIds: uniqueIds,
+          sql: sanitizeSql(text || ''),
+          code: err?.code,
+          detail: err?.detail,
+          hint: err?.hint,
+          message: err?.message
+        });
+      }
+      throw err;
+    }
+  };
   try {
     await client.query('BEGIN');
     for (const id of uniqueIds) {
@@ -333,6 +544,7 @@ async function withPlayersTx(ids, fn) {
     }
     throw err;
   } finally {
+    client.query = originalQuery;
     for (let i = locks.length - 1; i >= 0; i -= 1) {
       const [k1, k2] = locks[i];
       try {
@@ -343,6 +555,14 @@ async function withPlayersTx(ids, fn) {
     }
     client.release();
   }
+}
+
+function getSessionTimeouts() {
+  return {
+    ttlMs: SESSION_TTL_MS,
+    idleTimeoutSec: SESSION_IDLE_TIMEOUT_SEC,
+    idleTimeoutMs: SESSION_IDLE_TIMEOUT_MS
+  };
 }
 
 async function withPlayerTx(playerId, fn) {
@@ -448,7 +668,7 @@ async function listPlayers(client) {
 async function upsertPlayer(p, client) {
   const s = toSnake(p);
   const cols = [
-    'id','name','status','identity','day_age','morality','level','attack',
+    'id','account_id','name','status','identity','day_age','morality','level','attack',
     'hp','hp_max','action','action_max','exp_current','exp_max',
     'x','y','z','bind_x','bind_y','bind_z','gold','dodge',
     'inventory','last_hp_update','last_action_update'
@@ -517,16 +737,7 @@ async function createSession(accountId, meta = {}) {
   if (!accountId) throw new Error('accountId required');
   return withTx(async client => {
     const runner = exec(client);
-    await runner.query('DELETE FROM sessions WHERE account_id=$1 AND expires_at <= now()', [accountId]);
-    const { rows } = await runner.query(
-      'SELECT 1 FROM sessions WHERE account_id=$1 AND expires_at > now() LIMIT 1',
-      [accountId]
-    );
-    if (rows.length > 0) {
-      const err = new Error('already logged in');
-      err.code = 'ALREADY_LOGGED_IN';
-      throw err;
-    }
+    await runner.query('DELETE FROM sessions WHERE account_id=$1', [accountId]);
     const sessionId = randomUUID();
     try {
       await runner.query(
@@ -535,11 +746,6 @@ async function createSession(accountId, meta = {}) {
         [sessionId, accountId, Math.max(1, Math.floor(SESSION_TTL_MS)), meta.userAgent || null, meta.ip || null]
       );
     } catch (err) {
-      if (err.code === '23505') {
-        const dup = new Error('already logged in');
-        dup.code = 'ALREADY_LOGGED_IN';
-        throw dup;
-      }
       throw err;
     }
     const expiresAt = new Date(Date.now() + Math.max(1, Math.floor(SESSION_TTL_MS)));
@@ -728,6 +934,382 @@ async function withItemNameLock(nameNorm, fn, client) {
   }
 }
 
+async function getRegionByCoord(x, y, z, client) {
+  const coords = [x, y, z].map(Number);
+  if (coords.some(value => !Number.isFinite(value))) {
+    return null;
+  }
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    `SELECT wr.*, p.name AS owner_name
+       FROM world_regions wr
+       LEFT JOIN players p ON COALESCE(p.account_id::text, p.id::text) = wr.owner_account_id::text
+      WHERE wr.x = $1 AND wr.y = $2 AND wr.z = $3
+      LIMIT 1`,
+    coords
+  );
+  if (rows.length === 0) return null;
+  return toCamelRegion(rows[0]);
+}
+
+async function listRegionMobs(regionId, client) {
+  if (!regionId) return [];
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    `SELECT *
+       FROM region_mobs
+      WHERE region_id = $1
+      ORDER BY is_guardian DESC, created_at ASC`,
+    [regionId]
+  );
+  return rows.map(toCamelRegionMob);
+}
+
+async function findRegionsByName(name, client) {
+  const canonical = canonicalize(name);
+  if (!canonical) return [];
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    `SELECT wr.*, p.name AS owner_name
+       FROM world_regions wr
+       LEFT JOIN players p ON COALESCE(p.account_id::text, p.id::text) = wr.owner_account_id::text
+      WHERE wr.name_norm = $1`,
+    [canonical]
+  );
+  return rows.map(toCamelRegion);
+}
+
+async function isRegionMobNameTaken(name, client) {
+  const canonical = canonicalize(name);
+  if (!canonical) return false;
+  const runner = exec(client);
+  const { rows } = await runner.query(
+    'SELECT 1 FROM region_mobs WHERE LOWER(name) = $1 LIMIT 1',
+    [canonical]
+  );
+  return rows.length > 0;
+}
+
+function normalizeRegionName(name) {
+  if (typeof name !== 'string') return '';
+  const trimmed = name.trim();
+  return canonicalize(trimmed);
+}
+
+async function claimRegionByCoord(x, y, z, accountId, attributes = {}, client) {
+  const coords = [x, y, z].map(Number);
+  if (coords.some(value => !Number.isFinite(value))) {
+    return { ok: false, reason: 'invalid-coordinates' };
+  }
+  if (!accountId) {
+    return { ok: false, reason: 'missing-account' };
+  }
+  const name = typeof attributes.name === 'string' ? attributes.name.trim() : '';
+  const levelInput = Number(attributes.level);
+  const level = Number.isFinite(levelInput) ? Math.max(1, Math.round(levelInput)) : null;
+  const perform = async runnerClient => {
+    const runner = exec(runnerClient);
+    let { rows } = await runner.query(
+      'SELECT * FROM world_regions WHERE x=$1 AND y=$2 AND z=$3 FOR UPDATE',
+      coords
+    );
+    let regionRow = rows[0];
+
+    if (!regionRow) {
+      if (!name) {
+        return { ok: false, reason: 'invalid-name' };
+      }
+      const nameNorm = normalizeRegionName(name);
+      if (!nameNorm) {
+        return { ok: false, reason: 'invalid-name' };
+      }
+      const targetLevel = level ?? 1;
+      try {
+        ({ rows } = await runner.query(
+          `INSERT INTO world_regions (x, y, z, name, name_norm, level, owner_account_id, owner_display)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           RETURNING *`,
+          [...coords, name, nameNorm, targetLevel, accountId, null]
+        ));
+        regionRow = rows[0];
+      } catch (err) {
+        if (err && err.code === '23505') {
+          if (err.constraint === 'idx_world_regions_name_norm' || err.constraint === 'world_regions_name_norm_key') {
+            return { ok: false, reason: 'name-taken' };
+          }
+          if (err.constraint === 'idx_world_regions_coords' || err.constraint === 'world_regions_pkey') {
+            const retry = await runner.query(
+              'SELECT * FROM world_regions WHERE x=$1 AND y=$2 AND z=$3 FOR UPDATE',
+              coords
+            );
+            regionRow = retry.rows[0];
+          } else {
+            throw err;
+          }
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    if (!regionRow) {
+      return { ok: false, reason: 'unknown' };
+    }
+
+    if (regionRow.is_system || regionRow.is_claimable === false) {
+      return { ok: false, reason: 'not-claimable', region: toCamelRegion(regionRow) };
+    }
+
+    if (regionRow.owner_account_id && regionRow.owner_account_id !== accountId) {
+      return { ok: false, reason: 'already-claimed', region: toCamelRegion(regionRow) };
+    }
+
+    const updates = [];
+    const values = [];
+    let idx = 1;
+
+    if (name) {
+      const normalized = normalizeRegionName(name);
+      if (!normalized) {
+        return { ok: false, reason: 'invalid-name' };
+      }
+      updates.push(`name=$${idx++}`);
+      values.push(name);
+      updates.push(`name_norm=$${idx++}`);
+      values.push(normalized);
+    }
+
+    if (level != null) {
+      updates.push(`level=$${idx++}`);
+      values.push(level);
+    }
+
+    updates.push(`owner_account_id=$${idx++}`);
+    values.push(accountId);
+    updates.push(`owner_display=NULL`);
+    values.push(regionRow.id);
+
+    try {
+      const result = await runner.query(
+        `UPDATE world_regions
+            SET ${updates.join(', ')}
+          WHERE id=$${idx}
+          RETURNING *`,
+        values
+      );
+      regionRow = result.rows[0];
+    } catch (err) {
+      if (err && err.code === '23505') {
+        if (err.constraint === 'idx_world_regions_name_norm' || err.constraint === 'world_regions_name_norm_key') {
+          return { ok: false, reason: 'name-taken' };
+        }
+      }
+      throw err;
+    }
+
+    await runner.query('DELETE FROM region_mobs WHERE region_id=$1 AND is_guardian=TRUE', [regionRow.id]);
+
+    const region = await getRegionByCoord(coords[0], coords[1], coords[2], runner);
+    return { ok: true, region };
+  };
+
+  if (client) {
+    return perform(client);
+  }
+  return withTx(perform);
+}
+
+function resolveNow(value) {
+  if (value instanceof Date) return value;
+  if (typeof value === 'number') {
+    const byNumber = new Date(value);
+    if (!Number.isNaN(byNumber.getTime())) return byNumber;
+  }
+  if (typeof value === 'string') {
+    const byString = new Date(value);
+    if (!Number.isNaN(byString.getTime())) return byString;
+  }
+  return new Date();
+}
+
+async function killMob(mobId, options = {}, client) {
+  if (!mobId) {
+    return { ok: false, reason: 'missing-mob' };
+  }
+  const nowDate = resolveNow(options.now);
+  const nowIso = nowDate.toISOString();
+  const delayMs = Number(options.respawnDelayMs);
+  const hasDelay = Number.isFinite(delayMs) && delayMs > 0;
+  const respawnAt = hasDelay ? new Date(nowDate.getTime() + delayMs).toISOString() : null;
+  const runner = exec(client);
+
+  const update = await runner.query(
+    `UPDATE region_mobs rm
+        SET alive = FALSE,
+            respawn_at = $2,
+            updated_at = $1
+      FROM world_regions wr
+     WHERE rm.id = $3
+       AND rm.alive = TRUE
+       AND wr.id = rm.region_id
+     RETURNING rm.*, wr.is_system AS region_is_system, wr.is_destructible AS region_is_destructible, wr.id AS region_id, wr.owner_account_id AS region_owner_account_id`,
+    [nowIso, respawnAt, mobId]
+  );
+
+  if (update.rows.length === 0) {
+    const existing = await runner.query(
+      `SELECT rm.*, wr.is_system AS region_is_system, wr.is_destructible AS region_is_destructible, wr.id AS region_id, wr.owner_account_id AS region_owner_account_id
+         FROM region_mobs rm
+         JOIN world_regions wr ON wr.id = rm.region_id
+        WHERE rm.id = $1
+        LIMIT 1`,
+      [mobId]
+    );
+    if (existing.rows.length === 0) {
+      return { ok: false, reason: 'not-found' };
+    }
+    return {
+      ok: false,
+      reason: 'already-dead',
+      mob: toCamelRegionMob(existing.rows[0]),
+      region: {
+        id: existing.rows[0].region_id,
+        isSystem: existing.rows[0].region_is_system,
+        ownerAccountId: existing.rows[0].region_owner_account_id,
+        isDestructible: existing.rows[0].region_is_destructible
+      }
+    };
+  }
+
+  const row = update.rows[0];
+  const mob = toCamelRegionMob(row);
+  const region = {
+    id: row.region_id,
+    isSystem: row.region_is_system,
+    ownerAccountId: row.region_owner_account_id,
+    isDestructible: row.region_is_destructible
+  };
+
+  if (
+    mob.isGuardian &&
+    !region.isSystem &&
+    region.id &&
+    (region.isDestructible == null || region.isDestructible !== false)
+  ) {
+    await runner.query(
+      `UPDATE world_regions
+          SET owner_account_id = NULL,
+              owner_display = NULL,
+              name = $2,
+              name_norm = $3,
+              updated_at = $1
+        WHERE id = $4`,
+      [nowIso, '廢墟', normalizeRegionName('廢墟'), region.id]
+    );
+  }
+
+  return { ok: true, mob, region };
+}
+
+async function maybeRespawn(regionId, options = {}, client) {
+  if (!regionId) {
+    return { ok: false, reason: 'missing-region', mobs: [] };
+  }
+  const nowDate = resolveNow(options.now);
+  const nowIso = nowDate.toISOString();
+  const runner = exec(client);
+
+  const result = await runner.query(
+    `UPDATE region_mobs
+        SET alive = TRUE,
+            respawn_at = NULL,
+            updated_at = $2
+      WHERE region_id = $1
+        AND alive = FALSE
+        AND respawn_at IS NOT NULL
+        AND respawn_at <= $2
+      RETURNING *`,
+    [regionId, nowIso]
+  );
+
+  return { ok: true, mobs: result.rows.map(toCamelRegionMob) };
+}
+
+async function spawnMob(regionId, attrs = {}, client) {
+  if (!regionId) {
+    return { ok: false, reason: 'missing-region' };
+  }
+  const name = typeof attrs.name === 'string' ? attrs.name.trim() : '';
+  if (!name) {
+    return { ok: false, reason: 'invalid-name' };
+  }
+  const levelInput = Number(attrs.level);
+  const level = Number.isFinite(levelInput) ? Math.max(1, Math.round(levelInput)) : 1;
+  const hpInput = Number(attrs.hpMax);
+  const atkInput = Number(attrs.atk);
+  const hpMax = Number.isFinite(hpInput) ? Math.max(1, Math.round(hpInput)) : null;
+  const atk = Number.isFinite(atkInput) ? Math.max(1, Math.round(atkInput)) : null;
+  const isGuardian = !!attrs.isGuardian;
+  const perform = async runnerClient => {
+    const runner = exec(runnerClient);
+    const { rows: regionRows } = await runner.query(
+      'SELECT * FROM world_regions WHERE id=$1 FOR UPDATE',
+      [regionId]
+    );
+    if (regionRows.length === 0) {
+      return { ok: false, reason: 'region-missing' };
+    }
+
+    const existingRes = await runner.query(
+      'SELECT * FROM region_mobs WHERE region_id=$1 AND lower(name)=lower($2) LIMIT 1',
+      [regionId, name]
+    );
+    let mobRow = existingRes.rows[0];
+
+    if (!mobRow) {
+      if (!isGuardian) {
+        const { rows: countRows } = await runner.query(
+          'SELECT COUNT(*)::int AS count FROM region_mobs WHERE region_id=$1 AND is_guardian=FALSE',
+          [regionId]
+        );
+        const count = countRows[0]?.count ?? 0;
+        if (Number(count) >= 5) {
+          return { ok: false, reason: 'mob-limit' };
+        }
+      }
+      const insert = await runner.query(
+        `INSERT INTO region_mobs (region_id, name, is_guardian, level, hp_max, atk, alive, respawn_at)
+         VALUES ($1,$2,$3,$4,$5,$6,TRUE,NULL)
+         RETURNING *`,
+        [regionId, name, isGuardian, level, hpMax ?? level, atk ?? level]
+      );
+      mobRow = insert.rows[0];
+    } else {
+      const update = await runner.query(
+        `UPDATE region_mobs
+            SET name=$2,
+                is_guardian=$3,
+                level=$4,
+                hp_max=$5,
+                atk=$6,
+                alive=TRUE,
+                respawn_at=NULL
+          WHERE id=$1
+          RETURNING *`,
+        [mobRow.id, name, isGuardian, level, hpMax ?? mobRow.hp_max, atk ?? mobRow.atk]
+      );
+      mobRow = update.rows[0];
+    }
+
+    return { ok: true, mob: toCamelRegionMob(mobRow) };
+  };
+
+  if (client) {
+    return perform(client);
+  }
+  return withTx(perform);
+}
+
 module.exports = {
   init,
   withTx,
@@ -765,5 +1347,14 @@ module.exports = {
   listActiveItemsByOwners,
   setItemOwner,
   withItemNameLock,
+  getRegionByCoord,
+  listRegionMobs,
+  findRegionsByName,
+  isRegionMobNameTaken,
+  claimRegionByCoord,
+  spawnMob,
+  killMob,
+  maybeRespawn,
+  getSessionTimeouts,
   _pool: pool
 };

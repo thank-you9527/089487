@@ -3,6 +3,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
 const { addItemToInventory } = require('./lib/inventory');
 const { canonicalize, validateItemBaseName } = require('./lib/names');
@@ -13,6 +14,7 @@ const {
   buildItem,
   getPrefixLabel
 } = require('./lib/itemPrefixes');
+const { mergeDbMonstersIntoLocation } = require('./lib/regions');
 
 function assertEnvOrExit() {
   const missing = [];
@@ -74,11 +76,70 @@ function createRateLimiter({ windowMs, refillPerWindow, burst }) {
   };
 }
 
+function normalizeValue(value) {
+  if (value == null) return value;
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || Number.isNaN(value)) return String(value);
+    return value;
+  }
+  if (typeof value === 'bigint') {
+    const asNumber = Number(value);
+    return Number.isSafeInteger(asNumber) ? asNumber : value.toString();
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (Buffer.isBuffer(value)) return value.toString('base64');
+  if (Array.isArray(value)) return value.map(normalizeValue);
+  if (value instanceof Map) {
+    const out = {};
+    for (const [key, val] of value.entries()) {
+      if (typeof key === 'string') out[key] = normalizeValue(val);
+    }
+    return out;
+  }
+  if (value instanceof Set) return Array.from(value, normalizeValue);
+  if (typeof value === 'object') {
+    if (typeof value.toJSON === 'function') {
+      return normalizeValue(value.toJSON());
+    }
+    const out = {};
+    for (const [key, val] of Object.entries(value)) {
+      if (val === undefined) continue;
+      out[key] = normalizeValue(val);
+    }
+    return out;
+  }
+  return String(value);
+}
+
+function normalizeOutput(payload) {
+  const normalized = normalizeValue(payload);
+  if (normalized == null) return {};
+  if (Array.isArray(normalized)) return { result: normalized };
+  if (typeof normalized === 'object') return normalized;
+  return { result: normalized };
+}
+
+function safeStringify(value) {
+  return JSON.stringify(normalizeValue(value));
+}
+
+function safeJson(value) {
+  return JSON.parse(safeStringify(value));
+}
+
+function normalizeEvent(event) {
+  const normalized = normalizeOutput(event);
+  const payload = normalizeValue(normalized.payload ?? {});
+  return { ...normalized, payload };
+}
+
 function streamEvent(res, event) {
   if (!res || !event) return;
-  const id = event.id ?? event.event_id;
-  const kind = event.kind || 'message';
-  const data = JSON.stringify(event.payload ?? {});
+  const safeEvent = normalizeEvent(event);
+  const id = safeEvent.id ?? safeEvent.event_id;
+  const kind = safeEvent.kind || 'message';
+  const data = safeStringify(safeEvent.payload ?? {});
   const parts = [];
   if (id != null) parts.push(`id: ${id}`);
   parts.push(`event: ${kind}`);
@@ -198,22 +259,78 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use(express.json({ limit: '1mb' }));
+app.use(cookieParser());
 app.use(cors());
-app.use(express.json());
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'landing.html'));
 });
-app.use(express.static(__dirname));
+app.get('/player.html', (req, res) => {
+  res.redirect(302, '/');
+});
 
-const mapPath = path.join(__dirname, 'data', 'map.json');
-let worldMap = {};
-let mapWriteLock = Promise.resolve();
+const worldMap = Object.create(null);
 
 const normalizeName = canonicalize;
 
+function locationKeyFromPosition(pos) {
+  if (!pos) return null;
+  const { x, y, z } = pos;
+  if (![x, y, z].every(value => Number.isFinite(value))) return null;
+  return `${x},${y},${z}`;
+}
+
+function ensureWorldLocation(pos) {
+  const key = locationKeyFromPosition(pos);
+  if (!key) return null;
+  if (!worldMap[key]) worldMap[key] = {};
+  const loc = worldMap[key];
+  if (!loc.name) loc.name = '未開拓之地';
+  if (loc.level == null) loc.level = '';
+  if (!loc.owner) loc.owner = '無所屬';
+  if (typeof loc.description !== 'string') loc.description = '嗚啦呀哈呀哈嗚啦';
+  if (!Array.isArray(loc.monsters)) loc.monsters = [];
+  if (!Array.isArray(loc.items)) loc.items = [];
+  loc.address = { x: pos.x ?? 0, y: pos.y ?? 0, z: pos.z ?? 0 };
+  return loc;
+}
+
+function applyRegionToLocation(pos, region) {
+  const loc = ensureWorldLocation(pos);
+  if (!loc) return null;
+  if (region) {
+    loc.regionId = region.id || null;
+    loc.name = region.name || loc.name || '未開拓之地';
+    loc.level = region.level != null ? region.level : loc.level ?? '';
+    const ownerLabel = region.ownerDisplay || region.ownerName;
+    if (ownerLabel) {
+      loc.owner = ownerLabel;
+    } else if (!region.ownerAccountId) {
+      loc.owner = '無所屬';
+    }
+    loc.ownerAccountId = region.ownerAccountId || null;
+    loc.ownerDisplay = region.ownerDisplay || null;
+    loc.isSystem = !!region.isSystem;
+    loc.isClaimable = region.isClaimable !== false;
+    loc.isDestructible = region.isDestructible !== false;
+  } else {
+    loc.regionId = null;
+    loc.ownerAccountId = null;
+    loc.ownerDisplay = null;
+    loc.isSystem = false;
+    loc.isClaimable = true;
+    loc.isDestructible = true;
+    loc.name = loc.name || '未開拓之地';
+    loc.level = '';
+    loc.owner = '無所屬';
+  }
+  return loc;
+}
+
 function forEachMonster(callback) {
   if (typeof callback !== 'function') return;
-  for (const key in worldMap) {
+  for (const key of Object.keys(worldMap)) {
     const loc = worldMap[key];
     if (!loc || !Array.isArray(loc.monsters)) continue;
     for (const monster of loc.monsters) {
@@ -246,58 +363,11 @@ async function isAnyNameTaken(name, options = {}) {
   const canonical = canonicalize(name);
   if (!canonical) return false;
   if (findMonstersByNormalizedName(name).length > 0) return true;
+  if (await db.isRegionMobNameTaken(canonical, options.client)) return true;
   const players = await db.findPlayersByNameInsensitive(name, options.client);
   if (players.length > 0) return true;
   const item = await db.findActiveItemByNameNorm(canonical, options.client);
   return !!item;
-}
-
-function scheduleMapWrite(task) {
-  const next = mapWriteLock.then(() => task());
-  mapWriteLock = next.catch(() => {});
-  return next;
-}
-
-async function loadMap() {
-  try {
-    const data = await fs.readFile(mapPath, 'utf8');
-    worldMap = JSON.parse(data);
-    for (const key in worldMap) {
-      const loc = worldMap[key];
-      if (loc && loc.name === '荒山野嶺') {
-        loc.name = '廢墟';
-        if (typeof loc.description === 'string') {
-          loc.description = loc.description.replace(/荒山野嶺/g, '廢墟');
-        }
-      }
-      if (loc && Array.isArray(loc.monsters)) {
-        if (loc.monsters.length > 5) {
-          loc.monsters = loc.monsters.slice(0, 5);
-          worldMap[key].monsters = loc.monsters;
-        }
-        for (const m of loc.monsters) {
-          if (!m.maxHp) m.maxHp = hpAtLevel(m.level);
-        }
-      }
-    }
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      worldMap = {};
-      await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
-    } else {
-      console.error('Failed to read map', err);
-      worldMap = {};
-    }
-  }
-}
-async function saveMap() {
-  return scheduleMapWrite(async () => {
-    try {
-      await fs.writeFile(mapPath, JSON.stringify(worldMap, null, 2));
-    } catch (err) {
-      console.error('Failed to save map', err);
-    }
-  });
 }
 
 function hydrateCharacter(row) {
@@ -410,27 +480,24 @@ if (!SECRET) {
 
 const captchas = new Map();
 
-const COOKIE_BASE = { httpOnly: true, secure: true, sameSite: 'lax', path: '/' };
+const SECURE_COOKIE =
+  process.env.COOKIE_SECURE != null
+    ? process.env.COOKIE_SECURE === 'true'
+    : process.env.NODE_ENV === 'production';
+
+const AUTH_COOKIE_NAME = 'jwt';
+const COOKIE_BASE = { httpOnly: true, sameSite: 'lax', secure: SECURE_COOKIE, path: '/' };
 const COOKIE_WITH_MAX_AGE = { ...COOKIE_BASE, maxAge: SESSION_TTL_MS };
+const DISABLE_CAPTCHA = process.env.DISABLE_CAPTCHA === 'true';
 const JWT_EXPIRES_IN = '7d';
 const SESSION_IDLE_TIMEOUT_SEC = Math.max(0, Math.floor(SESSION_IDLE_TIMEOUT_MS / 1000));
 
-function parseCookies(req) {
-  const header = req.headers.cookie;
-  if (!header) return {};
-  return header.split(';').reduce((acc, part) => {
-    const [rawKey, ...rest] = part.split('=');
-    if (!rawKey) return acc;
-    const key = rawKey.trim();
-    const value = rest.join('=').trim();
-    if (!key) return acc;
-    acc[key] = decodeURIComponent(value || '');
-    return acc;
-  }, {});
+function setAuthCookie(res, token) {
+  res.cookie(AUTH_COOKIE_NAME, token, COOKIE_WITH_MAX_AGE);
 }
 
 function clearAuthCookie(res) {
-  res.clearCookie('jwt', COOKIE_BASE);
+  res.clearCookie(AUTH_COOKIE_NAME, COOKIE_BASE);
 }
 
 const itemsPath = path.join(__dirname, 'data', 'items.json');
@@ -449,55 +516,95 @@ async function loadItems() {
   }
 }
 
-async function auth(req, res, next) {
+function clearAuthContext(req) {
+  req.accountId = null;
+  req.sessionId = null;
+  req.account = null;
+  req.user = null;
+  req.username = null;
+}
+
+function authenticateRequest(req) {
+  clearAuthContext(req);
+  const token = req.cookies?.[AUTH_COOKIE_NAME];
+  if (!token) {
+    return { ok: false, error: 'no-cookie' };
+  }
+  let payload;
   try {
-    const cookies = parseCookies(req);
-    const token = cookies.jwt;
-    if (!token) return res.status(401).json({ error: 'unauthorized' });
-    let payload;
-    try {
-      payload = jwt.verify(token, SECRET);
-    } catch (err) {
-      clearAuthCookie(res);
-      return res.status(401).json({ error: 'bad-token' });
+    payload = jwt.verify(token, SECRET);
+  } catch (err) {
+    return { ok: false, error: 'bad-jwt' };
+  }
+  const accountId = payload?.account_id;
+  const sessionId = payload?.session_id;
+  if (!accountId || !sessionId) {
+    return { ok: false, error: 'bad-jwt' };
+  }
+  const username = payload?.username || null;
+  req.accountId = accountId;
+  req.sessionId = sessionId;
+  req.account = { id: accountId, username };
+  req.user = { id: accountId, sessionId, username };
+  req.username = username;
+  return { ok: true };
+}
+
+async function requireAuth(req, res, next) {
+  try {
+    const result = authenticateRequest(req);
+    if (!result.ok) {
+      req.authError = result.error;
+      return res.status(401).json({ ok: false, error: result.error });
     }
-    const { sub, jti, username } = payload;
-    if (!sub || !jti || !username) {
-      clearAuthCookie(res);
-      return res.status(401).json({ error: 'bad-token' });
-    }
-    const session = await db.getSession(jti);
-    if (!session) {
-      clearAuthCookie(res);
-      return res.status(401).json({ error: 'session-gone' });
-    }
-    req.user = { id: sub, sessionId: jti, username };
-    req.username = username;
-    req.sessionRow = session;
+    req.authError = null;
     return next();
   } catch (err) {
     console.error('auth middleware failed', err);
-    return res.status(500).json({ error: 'internal error' });
+    req.authError = 'server-error';
+    clearAuthContext(req);
+    return res.status(500).json({ ok: false, error: 'server-error' });
   }
+}
+
+function authOptional(req, res, next) {
+  try {
+    const result = authenticateRequest(req);
+    if (!result.ok) {
+      req.authError = result.error;
+    } else {
+      req.authError = null;
+    }
+  } catch (err) {
+    console.error('authOptional middleware failed', err);
+    req.authError = 'server-error';
+    clearAuthContext(req);
+  }
+  next();
 }
 
 async function ensureActiveSession(req, res, next) {
   try {
-    const session = req.sessionRow;
+    if (!req.sessionId) {
+      return res.status(401).json({ ok: false, error: 'no-session' });
+    }
+    const session = await db.getSession(req.sessionId);
     if (!session) {
-      clearAuthCookie(res);
-      return res.status(401).json({ error: 'unauthorized' });
+      return res.status(401).json({ ok: false, error: 'session-missing' });
     }
-    const touched = await db.touchSession(session.session_id);
+    const expiresAt = session?.expires_at ? new Date(session.expires_at).getTime() : null;
+    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+      return res.status(401).json({ ok: false, error: 'session-expired' });
+    }
+    const touched = await db.touchSession(req.sessionId);
     if (!touched) {
-      clearAuthCookie(res);
-      return res.status(401).json({ error: 'unauthorized' });
+      return res.status(401).json({ ok: false, error: 'session-missing' });
     }
+    req.sessionRow = session;
     return next();
   } catch (err) {
     console.error('ensureActiveSession failed', err);
-    clearAuthCookie(res);
-    return res.status(401).json({ error: 'unauthorized' });
+    return res.status(503).json({ ok: false, error: 'auth-db-failed' });
   }
 }
 
@@ -615,7 +722,7 @@ async function pickupItems(c, options = {}) {
   const { queueEvent, logs, dbClient } = options;
   const key = `${c.position.x},${c.position.y},${c.position.z}`;
   const loc = worldMap[key];
-  if (!loc || !Array.isArray(loc.items)) return;
+  if (!loc || !Array.isArray(loc.items) || loc.items.length === 0) return;
   const remaining = [];
   for (const item of loc.items) {
     if (item.owner === c.name) {
@@ -639,25 +746,6 @@ async function pickupItems(c, options = {}) {
     }
   }
   if (remaining.length > 0) loc.items = remaining; else delete loc.items;
-  await saveMap();
-}
-
-function reviveMonsters() {
-  const minute = new Date().getMinutes();
-  if (minute % 15 !== 0) return;
-  let changed = false;
-  for (const key in worldMap) {
-    const loc = worldMap[key];
-    if (!loc || !loc.owner || !Array.isArray(loc.monsters)) continue;
-    for (const m of loc.monsters) {
-      if (m.hp <= 0 && m.lastReviveMinute !== minute) {
-        m.hp = hpAtLevel(m.level);
-        m.lastReviveMinute = minute;
-        changed = true;
-      }
-    }
-  }
-  if (changed) saveMap();
 }
 
 async function handleDeath(c, logs, markDirty, queueEvent, dbClient) {
@@ -669,11 +757,10 @@ async function handleDeath(c, logs, markDirty, queueEvent, dbClient) {
       await db.setItemOwner(item.id, null, dbClient);
     }
     const key = `${deathPos.x},${deathPos.y},${deathPos.z}`;
-    const loc = worldMap[key] || {};
-    loc.items = loc.items || [];
+    const loc = ensureWorldLocation(deathPos) || {};
+    loc.items = Array.isArray(loc.items) ? loc.items : [];
     loc.items.push({ ...item, owner: c.name });
     worldMap[key] = loc;
-    await saveMap();
     logs.push('你掉落了一件道具');
   }
   const respawn = c.bindPoint || { x: 0, y: 0, z: 0 };
@@ -705,14 +792,21 @@ app.get('/api/captcha', (req, res) => {
 
 app.post('/api/register', async (req, res) => {
   const { username, password, captchaId, captcha } = req.body;
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: 'invalid input' });
+  }
   if (!userRegex.test(username) || !passRegex.test(password)) {
     return res.status(400).json({ error: 'invalid input' });
   }
-  const expected = captchas.get(captchaId);
-  if (!expected || expected !== captcha) {
-    return res.status(400).json({ error: 'invalid captcha' });
+  if (!DISABLE_CAPTCHA) {
+    const expected = captchas.get(captchaId);
+    if (!expected || expected !== captcha) {
+      return res.status(400).json({ error: 'invalid captcha' });
+    }
   }
-  captchas.delete(captchaId);
+  if (captchaId) {
+    captchas.delete(captchaId);
+  }
   try {
     if (await isAnyNameTaken(username)) {
       return res.status(400).json({ error: 'username-taken' });
@@ -743,6 +837,9 @@ app.post('/api/register', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: 'invalid input' });
+  }
   try {
     let account = null;
     try {
@@ -765,15 +862,16 @@ app.post('/api/login', async (req, res) => {
       : req.ip;
     try {
       const { sessionId } = await db.createSession(account.id, { userAgent, ip });
-      const token = jwt.sign({ sub: account.id, jti: sessionId, username: account.username }, SECRET, {
-        expiresIn: JWT_EXPIRES_IN
-      });
-      res.cookie('jwt', token, COOKIE_WITH_MAX_AGE);
+      const token = jwt.sign(
+        { account_id: account.id, session_id: sessionId, username: account.username },
+        SECRET,
+        {
+          expiresIn: JWT_EXPIRES_IN
+        }
+      );
+      setAuthCookie(res, token);
       return res.status(204).end();
     } catch (err) {
-      if (err && err.code === 'ALREADY_LOGGED_IN') {
-        return res.status(409).json({ error: 'already-logged-in' });
-      }
       console.error('createSession failed', err);
       return res.status(500).json({ error: 'internal error' });
     }
@@ -783,9 +881,9 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-app.post('/api/logout', auth, ensureActiveSession, async (req, res) => {
+app.post('/api/logout', requireAuth, ensureActiveSession, async (req, res) => {
   try {
-    await db.deleteSession(req.user.sessionId);
+    await db.deleteSession(req.sessionId);
   } catch (err) {
     console.error('deleteSession failed', err);
   }
@@ -793,18 +891,40 @@ app.post('/api/logout', auth, ensureActiveSession, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/logout-beacon', auth, ensureActiveSession, async (req, res) => {
+app.post('/api/logout-beacon', async (req, res) => {
+  const token = req.cookies?.[AUTH_COOKIE_NAME];
+  if (!token) {
+    clearAuthCookie(res);
+    return res.status(204).end();
+  }
   try {
-    await db.deleteSession(req.user.sessionId);
+    const payload = jwt.verify(token, SECRET);
+    const sessionId = payload?.session_id;
+    if (sessionId) {
+      await db.deleteSession(sessionId);
+    }
   } catch (err) {
     console.error('logout-beacon failed', err);
   }
   clearAuthCookie(res);
+  res.status(204).end();
+});
+
+app.post('/api/ping', requireAuth, ensureActiveSession, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/ping', auth, ensureActiveSession, (req, res) => {
-  res.json({ ok: true });
+app.get('/api/whoami', authOptional, (req, res) => {
+  if (!req.accountId) {
+    const error = req.authError || 'no-session';
+    const status = error === 'server-error' ? 500 : 401;
+    return res.status(status).json({ ok: false, error });
+  }
+  res.json({
+    ok: true,
+    accountId: req.accountId,
+    username: req.account?.username || null
+  });
 });
 
 app.get('/api/db-ping', async (req, res) => {
@@ -820,7 +940,7 @@ app.get('/api/db-ping', async (req, res) => {
   }
 });
 
-app.get('/api/events', auth, ensureActiveSession, (req, res) => {
+app.get('/api/events', requireAuth, ensureActiveSession, (req, res) => {
   res.set({
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -878,7 +998,7 @@ app.get('/api/events', auth, ensureActiveSession, (req, res) => {
   })();
 });
 
-app.get('/api/character', auth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
+app.get('/api/character', requireAuth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
   try {
     const result = await db.withPlayerTx(req.user.id, async client => {
       const row = await db.getPlayer(req.user.id, client);
@@ -890,7 +1010,7 @@ app.get('/api/character', auth, ensureActiveSession, RATE_LIMITER, async (req, r
       return responseCharacter(character);
     });
     if (!result) {
-      return res.status(404).json({ error: 'not found' });
+      return res.status(404).json({ error: 'character-missing' });
     }
     res.json({
       name: result.name,
@@ -906,12 +1026,15 @@ app.get('/api/character', auth, ensureActiveSession, RATE_LIMITER, async (req, r
       bio: result.bio || '看屁看'
     });
   } catch (err) {
+    const status = err?.code === '42P01' || err?.code === '08001' || err?.code === 'ECONNREFUSED'
+      ? 503
+      : 500;
     console.error('failed to load character', err);
-    res.status(500).json({ error: 'internal error' });
+    res.status(status).json({ error: status === 503 ? 'db-unavailable' : 'internal error' });
   }
 });
 
-app.post('/api/character', auth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
+app.post('/api/character', requireAuth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
   const { name } = req.body;
   if (!nameRegex.test(name)) {
     return res.status(400).json({ error: 'invalid name' });
@@ -992,30 +1115,23 @@ function countPlayersAtPosition(playersIterable, pos) {
 }
 
 function getLocationInfo(playersIterable, pos) {
-  const key = `${pos.x},${pos.y},${pos.z}`;
-  const loc = worldMap[key];
-  const playersHere = countPlayersAtPosition(playersIterable, pos);
-  if (loc) {
-    const npcs = Array.isArray(loc.npcs) ? loc.npcs.length : 0;
-    const monsters = Array.isArray(loc.monsters) ? loc.monsters.length : 0;
-    return {
-      name: loc.name,
-      level: loc.level || '',
-      owner: loc.owner || '無所屬',
-      population: playersHere + npcs + monsters,
-      description: loc.description || '這個人很懶，什麼都沒寫。',
-      address: pos,
-      returnMark: !!loc.returnMark
-    };
-  }
+  const target =
+    pos && Number.isFinite(pos.x) && Number.isFinite(pos.y) && Number.isFinite(pos.z)
+      ? pos
+      : { x: 0, y: 0, z: 0 };
+  const loc = ensureWorldLocation(target);
+  const address = loc?.address || { x: target.x, y: target.y, z: target.z };
+  const playersHere = countPlayersAtPosition(playersIterable, address);
+  const npcs = Array.isArray(loc?.npcs) ? loc.npcs.length : 0;
+  const monsters = Array.isArray(loc?.monsters) ? loc.monsters.length : 0;
   return {
-    name: '未開拓之地',
-    level: '',
-    owner: '無所屬',
-    population: playersHere,
-    description: '嗚啦呀哈呀哈嗚啦',
-    address: pos,
-    returnMark: false
+    name: loc?.name || '未開拓之地',
+    level: loc?.level != null ? loc.level : '',
+    owner: loc?.owner || '無所屬',
+    population: playersHere + npcs + monsters,
+    description: loc?.description || '這個人很懶，什麼都沒寫。',
+    address,
+    returnMark: !!loc?.returnMark
   };
 }
 
@@ -1043,19 +1159,44 @@ function findCharactersByNameIn(playersIterable, name) {
   return matches;
 }
 
-app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
-  const { command } = req.body || {};
-  const trimmed = typeof command === 'string' ? command.trim() : '';
-  if (!trimmed) {
-    return res.status(400).json({ error: 'invalid command' });
+app.post('/api/command', requireAuth, ensureActiveSession, RATE_LIMITER, async (req, res) => {
+  const commandText = (req.body?.command ?? '').trim();
+  if (!commandText) {
+    return res.status(400).json({ ok: false, error: 'bad-command' });
+  }
+
+  if (/^help$/i.test(commandText)) {
+    const lines = [
+      '指令列表：',
+      'help：顯示指令列表',
+      '看看：顯示目前角色資訊',
+      '看看/名稱：查詢其他玩家或怪物資訊',
+      '看路：顯示目前所在地區資訊',
+      '前進：往目前面向方向前進一格',
+      '後退：往相反方向退一格',
+      '左轉：向左移動一格',
+      '右轉：向右移動一格',
+      '打老鷹：向上移動一格',
+      '挖地瓜：向下移動一格',
+      '佔領/地名：命名並佔領目前地區',
+      '孵化/名稱：在目前地區孵化守護神候補或怪物',
+      '歐歐睏：在有回歸標記的地區綁定復活點',
+      '歐拉：對當前目標發動攻擊或友善互動',
+      '歐拉/名稱：指定攻擊目前所在地區的玩家或怪物',
+      '捏捏/道具名：製作或刷新道具',
+      '蛋雕/道具名：刪除背包內的道具',
+      '讓我看看/前綴+道具名：查看指定道具的詳細資訊',
+      '查看家當：列出自己的背包內容'
+    ];
+    return res.json(safeJson({ ok: true, lines }));
   }
 
   try {
     const participants = new Set([req.user.id]);
     let targetPlayerId = null;
 
-    if (trimmed.startsWith('歐拉/')) {
-      const targetName = trimmed.slice(3).trim();
+    if (commandText.startsWith('歐拉/')) {
+      const targetName = commandText.slice(3).trim();
       if (targetName) {
         const matches = await db.findPlayersByNameInsensitive(targetName);
         const target = matches.find(player => player.id !== req.user.id);
@@ -1064,10 +1205,10 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
           participants.add(target.id);
         }
       }
-    } else if (trimmed === '歐拉') {
+    } else if (commandText === '歐拉') {
       const attackerRow = await db.getPlayer(req.user.id);
       if (!attackerRow) {
-        return res.status(400).json({ error: 'character not found' });
+        return res.status(400).json({ ok: false, error: 'character not found' });
       }
       const { rows } = await db._pool.query(
         'SELECT id FROM players WHERE x=$1 AND y=$2 AND z=$3 AND id <> $4',
@@ -1082,7 +1223,6 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
     const eventsToPublish = [];
     const queuedEvents = [];
     const outcome = await db.withPlayersTx(participantIds, async client => {
-      reviveMonsters();
       const rows = await db.listPlayers(client);
       const playersMap = new Map();
       const playersByName = new Map();
@@ -1108,6 +1248,72 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         return { status: 400, body: { error: 'character not found' } };
       }
 
+      const regionCache = new Map();
+      const regionIdToKey = new Map();
+
+      const rememberRegion = (position, region) => {
+        if (!position) return region;
+        const key = locationKeyFromPosition(position);
+        if (!key) return region;
+        regionCache.set(key, region || null);
+        applyRegionToLocation(position, region);
+        if (region?.id) {
+          regionIdToKey.set(region.id, key);
+        }
+        return region;
+      };
+
+      const loadRegion = async position => {
+        if (
+          !position ||
+          typeof position.x !== 'number' ||
+          typeof position.y !== 'number' ||
+          typeof position.z !== 'number'
+        ) {
+          return null;
+        }
+        const key = locationKeyFromPosition(position);
+        if (regionCache.has(key)) return regionCache.get(key);
+        const region = await db.getRegionByCoord(position.x, position.y, position.z, client);
+        return rememberRegion(position, region);
+      };
+
+      const loadRegionMobs = async regionId => {
+        if (!regionId) return [];
+        const mobs = await db.listRegionMobs(regionId, client);
+        const key = regionIdToKey.get(regionId);
+        if (key) {
+          const [x, y, z] = key.split(',').map(Number);
+          const entry = ensureWorldLocation({ x, y, z });
+          if (entry) {
+            mergeDbMonstersIntoLocation(entry, mobs, {
+              attackAtLevel,
+              hpAtLevel,
+              expGainForLevel
+            });
+          }
+        }
+        return mobs;
+      };
+
+      const findRegionsByName = async name => {
+        const results = await db.findRegionsByName(name, client);
+        return results.map(region => {
+          const position = { x: region.x, y: region.y, z: region.z };
+          rememberRegion(position, region);
+          return { region, position };
+        });
+      };
+
+      try {
+        const region = await loadRegion(c.position);
+        if (region?.id) {
+          await loadRegionMobs(region.id);
+        }
+      } catch (err) {
+        console.error('failed to prime region cache', err);
+      }
+
       updateStats(c);
       regen(c);
       const queueEventFn = entry => {
@@ -1119,7 +1325,7 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
       await pickupItems(c, { queueEvent: queueEventFn, dbClient: client });
 
       if (c.status === '鼠了' && c.hp > 0) c.status = '醒著';
-      if (c.status === '眼睛閉著' && trimmed !== '歐歐睏') c.status = '醒著';
+      if (c.status === '眼睛閉著' && commandText !== '歐歐睏') c.status = '醒著';
 
       const logs = [];
       const dirtyPlayers = new Set([req.user.id]);
@@ -1138,8 +1344,15 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         c,
         users: usersList,
         worldMap,
-        saveMap,
         getLocationInfo: pos => getLocationInfo(playersMap.values(), pos),
+        countPlayersAt: pos => countPlayersAtPosition(playersMap.values(), pos),
+        getRegionFromDb: loadRegion,
+        listRegionMobsFromDb: loadRegionMobs,
+        findRegionCoordsByName: findRegionsByName,
+        maybeRespawnMobs: (regionId, options = {}) =>
+          db.maybeRespawn(regionId, { now: new Date(), ...options }, client),
+        killMobInDb: (mobId, options = {}) =>
+          db.killMob(mobId, { now: new Date(), ...options }, client),
         formatLocationInfo,
         formatCharacterInfo,
         listPlayersByName: name => playersByName.get(normalizeName(name)) || [],
@@ -1169,7 +1382,7 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         queueEvent: queueEventFn
       };
 
-      await dispatchCommands(trimmed, context, logs);
+      await dispatchCommands(commandText, context, logs);
 
       for (const id of dirtyPlayers) {
         const player = playersMap.get(id);
@@ -1188,7 +1401,7 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
       const selfEvent = await db.appendEvent(
         req.user.id,
         'command',
-        { command: trimmed, block, logs: block },
+        { command: commandText, block, logs: block },
         client
       );
       eventsToPublish.push({ playerId: req.user.id, event: selfEvent });
@@ -1196,7 +1409,7 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         const targetEvent = await db.appendEvent(
           targetPlayerId,
           'command',
-          { command: trimmed, block, logs: block },
+          { command: commandText, block, logs: block },
           client
         );
         eventsToPublish.push({ playerId: targetPlayerId, event: targetEvent });
@@ -1206,7 +1419,11 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
     });
 
     const status = outcome?.status ?? 500;
-    const body = outcome?.body ?? { error: 'server error' };
+    const normalized = normalizeOutput(outcome?.body ?? {});
+    const responsePayload =
+      status >= 200 && status < 300
+        ? { ok: true, ...normalized }
+        : { ok: false, ...normalized };
     if (Array.isArray(eventsToPublish)) {
       for (const entry of eventsToPublish) {
         if (entry?.playerId && entry.event) {
@@ -1214,12 +1431,22 @@ app.post('/api/command', auth, ensureActiveSession, RATE_LIMITER, async (req, re
         }
       }
     }
-    res.status(status).json(body);
+    return res.status(status).json(safeJson(responsePayload));
   } catch (err) {
-    console.error('command handler failed', err);
-    res.status(500).json({ error: 'server error' });
+    console.error('[command] error', {
+      accountId: req.user?.id,
+      username: req.user?.username,
+      cmd: commandText,
+      when: new Date().toISOString(),
+      stack: err?.stack || String(err)
+    });
+    return res.status(500).json(
+      safeJson({ ok: false, error: 'server-error', trace: err?.message || 'command-failed' })
+    );
   }
 });
+
+app.use(express.static(__dirname));
 
 app.use((err, req, res, next) => {
   console.error(`[${req?.id || '-'}]`, err?.stack || err);
@@ -1228,7 +1455,6 @@ app.use((err, req, res, next) => {
 });
 
 async function init() {
-  await loadMap();
   await loadItems();
   await db.init();
   ensureCleanupJob();

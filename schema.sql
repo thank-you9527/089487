@@ -4,6 +4,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- 玩家權威狀態
 CREATE TABLE IF NOT EXISTS players (
   id                 TEXT PRIMARY KEY,
+  account_id         TEXT,
   name               TEXT NOT NULL,
   status             TEXT NOT NULL DEFAULT '醒著',
   identity           TEXT NOT NULL DEFAULT '探求者',
@@ -69,6 +70,43 @@ CREATE TABLE IF NOT EXISTS items (
   deleted_at     TIMESTAMPTZ
 );
 
+CREATE TABLE IF NOT EXISTS world_regions (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  x                  INT  NOT NULL,
+  y                  INT  NOT NULL,
+  z                  INT  NOT NULL,
+  name               TEXT NOT NULL,
+  name_norm          TEXT NOT NULL,
+  level              INT  NOT NULL,
+  owner_account_id   TEXT REFERENCES accounts(id),
+  owner_display      TEXT,
+  is_system          BOOLEAN NOT NULL DEFAULT FALSE,
+  is_claimable       BOOLEAN NOT NULL DEFAULT TRUE,
+  is_destructible    BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT world_regions_system_guardrails
+    CHECK (NOT is_system OR (owner_account_id IS NULL AND is_claimable = FALSE AND is_destructible = FALSE)),
+  CONSTRAINT world_regions_name_norm_lower CHECK (name_norm = lower(name_norm))
+);
+
+CREATE TABLE IF NOT EXISTS region_mobs (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  region_id     UUID NOT NULL REFERENCES world_regions(id),
+  name          TEXT NOT NULL,
+  is_guardian   BOOLEAN NOT NULL DEFAULT FALSE,
+  level         INT NOT NULL,
+  hp_max        INT NOT NULL,
+  atk           INT NOT NULL,
+  alive         BOOLEAN NOT NULL DEFAULT TRUE,
+  respawn_at    TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE world_regions
+  ADD COLUMN IF NOT EXISTS owner_display TEXT;
+
 -- 帳號表
 CREATE TABLE IF NOT EXISTS accounts (
   id            TEXT PRIMARY KEY,
@@ -82,6 +120,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
 CREATE INDEX IF NOT EXISTS idx_accounts_username_norm ON accounts(username_norm);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_accounts_username_norm ON accounts(username_norm);
+CREATE INDEX IF NOT EXISTS idx_players_account ON players(account_id);
 CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
 CREATE INDEX IF NOT EXISTS idx_players_pos  ON players(x,y,z);
 CREATE INDEX IF NOT EXISTS idx_events_player ON events(player_id, is_read, id DESC);
@@ -91,3 +130,114 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_items_base_name_active
   WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_items_owner ON items(owner_id) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_items_maker ON items(maker_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_world_regions_coords ON world_regions(x, y, z);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_world_regions_name_norm ON world_regions(name_norm);
+CREATE INDEX IF NOT EXISTS idx_region_mobs_region ON region_mobs(region_id);
+CREATE INDEX IF NOT EXISTS idx_region_mobs_region_guardian ON region_mobs(region_id, is_guardian);
+
+-- Align player/account ownership columns to avoid join type mismatches
+DO $$
+DECLARE
+  account_type text;
+BEGIN
+  SELECT data_type INTO account_type
+  FROM information_schema.columns
+  WHERE table_name = 'accounts'
+    AND column_name = 'id'
+  LIMIT 1;
+
+  -- Backfill and align players.account_id to accounts.id
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'players' AND column_name = 'account_id'
+  ) THEN
+    EXECUTE format('ALTER TABLE players ADD COLUMN account_id %s', account_type);
+  END IF;
+
+  BEGIN
+    EXECUTE 'UPDATE players SET account_id = id WHERE account_id IS NULL';
+    EXECUTE 'ALTER TABLE players DROP CONSTRAINT IF EXISTS players_account_id_fkey';
+    EXECUTE format('ALTER TABLE players ALTER COLUMN account_id TYPE %s USING account_id::%s', account_type, account_type);
+    EXECUTE 'ALTER TABLE players ADD CONSTRAINT players_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id)';
+  EXCEPTION WHEN others THEN
+    RAISE NOTICE 'skipped players.account_id alignment: %', SQLERRM;
+  END;
+
+  -- Align world_regions.owner_account_id to accounts.id
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'world_regions' AND column_name = 'owner_account_id'
+  ) THEN
+    BEGIN
+      EXECUTE 'ALTER TABLE world_regions DROP CONSTRAINT IF EXISTS world_regions_owner_account_id_fkey';
+      EXECUTE format(
+        'ALTER TABLE world_regions ALTER COLUMN owner_account_id TYPE %s USING owner_account_id::%s',
+        account_type,
+        account_type
+      );
+      EXECUTE 'ALTER TABLE world_regions ADD CONSTRAINT world_regions_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES accounts(id)';
+    EXCEPTION WHEN others THEN
+      RAISE NOTICE 'skipped owner_account_id type alignment: %', SQLERRM;
+    END;
+  END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION trg_world_regions_touch()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION trg_region_mobs_touch()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION trg_world_regions_protect_system()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF OLD.is_system THEN
+    IF NEW.is_system IS DISTINCT FROM OLD.is_system THEN
+      RAISE EXCEPTION 'system regions cannot toggle is_system flag';
+    END IF;
+    IF NEW.owner_account_id IS DISTINCT FROM OLD.owner_account_id
+       OR NEW.is_claimable IS DISTINCT FROM OLD.is_claimable
+       OR NEW.is_destructible IS DISTINCT FROM OLD.is_destructible
+       OR NEW.x IS DISTINCT FROM OLD.x
+       OR NEW.y IS DISTINCT FROM OLD.y
+       OR NEW.z IS DISTINCT FROM OLD.z
+       OR NEW.name IS DISTINCT FROM OLD.name
+       OR NEW.name_norm IS DISTINCT FROM OLD.name_norm
+       OR NEW.level IS DISTINCT FROM OLD.level THEN
+      RAISE EXCEPTION 'system regions have protected fields';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_world_regions_touch_row') THEN
+    CREATE TRIGGER trg_world_regions_touch_row
+      BEFORE UPDATE ON world_regions
+      FOR EACH ROW EXECUTE FUNCTION trg_world_regions_touch();
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_world_regions_protect_system_row') THEN
+    CREATE TRIGGER trg_world_regions_protect_system_row
+      BEFORE UPDATE ON world_regions
+      FOR EACH ROW EXECUTE FUNCTION trg_world_regions_protect_system();
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_region_mobs_touch_row') THEN
+    CREATE TRIGGER trg_region_mobs_touch_row
+      BEFORE UPDATE ON region_mobs
+      FOR EACH ROW EXECUTE FUNCTION trg_region_mobs_touch();
+  END IF;
+END;
+$$;
