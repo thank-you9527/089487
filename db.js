@@ -77,6 +77,7 @@ if (typeof pool.on === 'function') {
 const toCamel = row => {
   if (!row) return row;
   const map = {
+    account_id: 'accountId',
     day_age: 'dayAge',
     hp_max: 'hpMax',
     action_max: 'actionMax',
@@ -95,6 +96,7 @@ const toCamel = row => {
 
 const toSnake = obj => {
   const map = {
+    accountId: 'account_id',
     dayAge: 'day_age',
     hpMax: 'hp_max',
     actionMax: 'action_max',
@@ -207,6 +209,7 @@ async function init() {
   );
   CREATE TABLE IF NOT EXISTS players (
     id                 TEXT PRIMARY KEY,
+    account_id         TEXT,
     name               TEXT NOT NULL,
     status             TEXT NOT NULL DEFAULT '醒著',
     identity           TEXT NOT NULL DEFAULT '探求者',
@@ -274,7 +277,7 @@ async function init() {
     name               TEXT NOT NULL,
     name_norm          TEXT NOT NULL,
     level              INT  NOT NULL,
-    owner_account_id   TEXT REFERENCES players(id),
+    owner_account_id   TEXT REFERENCES accounts(id),
     owner_display      TEXT,
     is_system          BOOLEAN NOT NULL DEFAULT FALSE,
     is_claimable       BOOLEAN NOT NULL DEFAULT TRUE,
@@ -303,6 +306,7 @@ async function init() {
     ADD COLUMN IF NOT EXISTS owner_display TEXT;
   CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
   CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
+  CREATE INDEX IF NOT EXISTS idx_players_account ON players(account_id);
   CREATE INDEX IF NOT EXISTS idx_players_pos ON players(x, y, z);
   CREATE INDEX IF NOT EXISTS idx_events_player ON events(player_id, is_read, id DESC);
   CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id);
@@ -316,19 +320,45 @@ async function init() {
   CREATE INDEX IF NOT EXISTS idx_region_mobs_region ON region_mobs(region_id);
   CREATE INDEX IF NOT EXISTS idx_region_mobs_region_guardian ON region_mobs(region_id, is_guardian);
 
-  -- Align owner_account_id with players.id (TEXT) so joins do not fail
+  -- Align player/account ownership columns to avoid join type mismatches
   DO $$
+  DECLARE
+    account_type text;
   BEGIN
+    SELECT data_type INTO account_type
+    FROM information_schema.columns
+    WHERE table_name = 'accounts'
+      AND column_name = 'id'
+    LIMIT 1;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'players' AND column_name = 'account_id'
+    ) THEN
+      EXECUTE format('ALTER TABLE players ADD COLUMN account_id %s', account_type);
+    END IF;
+
+    BEGIN
+      EXECUTE 'UPDATE players SET account_id = id WHERE account_id IS NULL';
+      EXECUTE 'ALTER TABLE players DROP CONSTRAINT IF EXISTS players_account_id_fkey';
+      EXECUTE format('ALTER TABLE players ALTER COLUMN account_id TYPE %s USING account_id::%s', account_type, account_type);
+      EXECUTE 'ALTER TABLE players ADD CONSTRAINT players_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id)';
+    EXCEPTION WHEN others THEN
+      RAISE NOTICE 'skipped players.account_id alignment: %', SQLERRM;
+    END;
+
     IF EXISTS (
       SELECT 1 FROM information_schema.columns
-       WHERE table_name = 'world_regions'
-         AND column_name = 'owner_account_id'
-         AND data_type <> 'text'
+      WHERE table_name = 'world_regions' AND column_name = 'owner_account_id'
     ) THEN
       BEGIN
-        ALTER TABLE world_regions DROP CONSTRAINT IF EXISTS world_regions_owner_account_id_fkey;
-        ALTER TABLE world_regions ALTER COLUMN owner_account_id TYPE TEXT USING owner_account_id::text;
-        ALTER TABLE world_regions ADD CONSTRAINT world_regions_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES players(id);
+        EXECUTE 'ALTER TABLE world_regions DROP CONSTRAINT IF EXISTS world_regions_owner_account_id_fkey';
+        EXECUTE format(
+          'ALTER TABLE world_regions ALTER COLUMN owner_account_id TYPE %s USING owner_account_id::%s',
+          account_type,
+          account_type
+        );
+        EXECUTE 'ALTER TABLE world_regions ADD CONSTRAINT world_regions_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES accounts(id)';
       EXCEPTION WHEN others THEN
         -- allow pg-mem and legacy installs without halting init
         RAISE NOTICE 'skipped owner_account_id type alignment: %', SQLERRM;
@@ -638,7 +668,7 @@ async function listPlayers(client) {
 async function upsertPlayer(p, client) {
   const s = toSnake(p);
   const cols = [
-    'id','name','status','identity','day_age','morality','level','attack',
+    'id','account_id','name','status','identity','day_age','morality','level','attack',
     'hp','hp_max','action','action_max','exp_current','exp_max',
     'x','y','z','bind_x','bind_y','bind_z','gold','dodge',
     'inventory','last_hp_update','last_action_update'
@@ -913,7 +943,7 @@ async function getRegionByCoord(x, y, z, client) {
   const { rows } = await runner.query(
     `SELECT wr.*, p.name AS owner_name
        FROM world_regions wr
-       LEFT JOIN players p ON p.id::text = wr.owner_account_id::text
+       LEFT JOIN players p ON COALESCE(p.account_id::text, p.id::text) = wr.owner_account_id::text
       WHERE wr.x = $1 AND wr.y = $2 AND wr.z = $3
       LIMIT 1`,
     coords
@@ -942,7 +972,7 @@ async function findRegionsByName(name, client) {
   const { rows } = await runner.query(
     `SELECT wr.*, p.name AS owner_name
        FROM world_regions wr
-       LEFT JOIN players p ON p.id::text = wr.owner_account_id::text
+       LEFT JOIN players p ON COALESCE(p.account_id::text, p.id::text) = wr.owner_account_id::text
       WHERE wr.name_norm = $1`,
     [canonical]
   );

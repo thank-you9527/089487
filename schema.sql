@@ -4,6 +4,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- 玩家權威狀態
 CREATE TABLE IF NOT EXISTS players (
   id                 TEXT PRIMARY KEY,
+  account_id         TEXT,
   name               TEXT NOT NULL,
   status             TEXT NOT NULL DEFAULT '醒著',
   identity           TEXT NOT NULL DEFAULT '探求者',
@@ -77,7 +78,7 @@ CREATE TABLE IF NOT EXISTS world_regions (
   name               TEXT NOT NULL,
   name_norm          TEXT NOT NULL,
   level              INT  NOT NULL,
-  owner_account_id   TEXT REFERENCES players(id),
+  owner_account_id   TEXT REFERENCES accounts(id),
   owner_display      TEXT,
   is_system          BOOLEAN NOT NULL DEFAULT FALSE,
   is_claimable       BOOLEAN NOT NULL DEFAULT TRUE,
@@ -119,6 +120,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
 CREATE INDEX IF NOT EXISTS idx_accounts_username_norm ON accounts(username_norm);
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_accounts_username_norm ON accounts(username_norm);
+CREATE INDEX IF NOT EXISTS idx_players_account ON players(account_id);
 CREATE INDEX IF NOT EXISTS idx_players_name ON players(name);
 CREATE INDEX IF NOT EXISTS idx_players_pos  ON players(x,y,z);
 CREATE INDEX IF NOT EXISTS idx_events_player ON events(player_id, is_read, id DESC);
@@ -133,19 +135,47 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_world_regions_name_norm ON world_regions(n
 CREATE INDEX IF NOT EXISTS idx_region_mobs_region ON region_mobs(region_id);
 CREATE INDEX IF NOT EXISTS idx_region_mobs_region_guardian ON region_mobs(region_id, is_guardian);
 
--- Align owner_account_id with players.id (TEXT) to keep joins consistent
+-- Align player/account ownership columns to avoid join type mismatches
 DO $$
+DECLARE
+  account_type text;
 BEGIN
+  SELECT data_type INTO account_type
+  FROM information_schema.columns
+  WHERE table_name = 'accounts'
+    AND column_name = 'id'
+  LIMIT 1;
+
+  -- Backfill and align players.account_id to accounts.id
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'players' AND column_name = 'account_id'
+  ) THEN
+    EXECUTE format('ALTER TABLE players ADD COLUMN account_id %s', account_type);
+  END IF;
+
+  BEGIN
+    EXECUTE 'UPDATE players SET account_id = id WHERE account_id IS NULL';
+    EXECUTE 'ALTER TABLE players DROP CONSTRAINT IF EXISTS players_account_id_fkey';
+    EXECUTE format('ALTER TABLE players ALTER COLUMN account_id TYPE %s USING account_id::%s', account_type, account_type);
+    EXECUTE 'ALTER TABLE players ADD CONSTRAINT players_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id)';
+  EXCEPTION WHEN others THEN
+    RAISE NOTICE 'skipped players.account_id alignment: %', SQLERRM;
+  END;
+
+  -- Align world_regions.owner_account_id to accounts.id
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-     WHERE table_name = 'world_regions'
-       AND column_name = 'owner_account_id'
-       AND data_type <> 'text'
+    WHERE table_name = 'world_regions' AND column_name = 'owner_account_id'
   ) THEN
     BEGIN
-      ALTER TABLE world_regions DROP CONSTRAINT IF EXISTS world_regions_owner_account_id_fkey;
-      ALTER TABLE world_regions ALTER COLUMN owner_account_id TYPE TEXT USING owner_account_id::text;
-      ALTER TABLE world_regions ADD CONSTRAINT world_regions_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES players(id);
+      EXECUTE 'ALTER TABLE world_regions DROP CONSTRAINT IF EXISTS world_regions_owner_account_id_fkey';
+      EXECUTE format(
+        'ALTER TABLE world_regions ALTER COLUMN owner_account_id TYPE %s USING owner_account_id::%s',
+        account_type,
+        account_type
+      );
+      EXECUTE 'ALTER TABLE world_regions ADD CONSTRAINT world_regions_owner_account_id_fkey FOREIGN KEY (owner_account_id) REFERENCES accounts(id)';
     EXCEPTION WHEN others THEN
       RAISE NOTICE 'skipped owner_account_id type alignment: %', SQLERRM;
     END;
