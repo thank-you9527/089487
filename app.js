@@ -36,7 +36,13 @@ const MIN_IDLE_LOGOUT_MS = 30 * 1000;
 const EFFECTIVE_IDLE_TIMEOUT_MS = Math.max(IDLE_TIMEOUT_MS, MIN_IDLE_LOGOUT_MS);
 
 function formatTimestamp(ts) {
-  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return new Date(ts).toLocaleString([], {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
 }
 
 function createMessageElement({ role, text, ts }) {
