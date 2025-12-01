@@ -917,7 +917,12 @@ app.post('/api/logout', requireAuth, ensureActiveSession, async (req, res) => {
 app.post('/api/logout-beacon', async (req, res) => {
   const token = req.cookies?.[AUTH_COOKIE_NAME];
   if (!token) {
-    logAndClearAuthCookie(req, res, 'missing-jwt', 204);
+    console.warn('[auth] logout-beacon skipped cookie clear', {
+      reason: 'missing-jwt',
+      path: req?.originalUrl || req?.path || 'unknown-path',
+      routePath: req?.route?.path || null,
+      status: 204
+    });
     return res.status(204).end();
   }
   try {
@@ -928,7 +933,12 @@ app.post('/api/logout-beacon', async (req, res) => {
     }
   } catch (err) {
     console.error('logout-beacon failed', err);
-    logAndClearAuthCookie(req, res, 'logout-beacon-invalid-jwt', 204);
+    console.warn('[auth] logout-beacon skipped cookie clear', {
+      reason: 'logout-beacon-invalid-jwt',
+      path: req?.originalUrl || req?.path || 'unknown-path',
+      routePath: req?.route?.path || null,
+      status: 204
+    });
     return res.status(204).end();
   }
   logAndClearAuthCookie(req, res, 'logout-beacon', 204);

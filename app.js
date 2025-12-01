@@ -42,7 +42,6 @@ const HEARTBEAT_HIDDEN_MS = 120_000;
 let heartbeatTimer = null;
 let heartbeatFailures = 0;
 let logoutBeaconSent = false;
-let logoutBeaconCooldownTimer = null;
 let eventSource = null;
 let idleTimer = null;
 let lastActivityAt = Date.now();
@@ -236,6 +235,12 @@ function sendLogoutBeacon(trigger) {
   if (trigger !== 'user-logout' && trigger !== 'beforeunload') return;
   if (logoutBeaconSent) return;
   logoutBeaconSent = true;
+  console.debug('[client] sendLogoutBeacon', {
+    trigger,
+    isAuthenticated,
+    sessionExpired,
+    logoutBeaconSent
+  });
   try {
     if (navigator.sendBeacon) {
       const blob = new Blob([], { type: 'application/json' });
@@ -254,14 +259,6 @@ function sendLogoutBeacon(trigger) {
       keepalive: true
     }).catch(() => {});
   }
-  if (logoutBeaconCooldownTimer) {
-    clearTimeout(logoutBeaconCooldownTimer);
-    logoutBeaconCooldownTimer = null;
-  }
-  logoutBeaconCooldownTimer = setTimeout(() => {
-    logoutBeaconSent = false;
-    logoutBeaconCooldownTimer = null;
-  }, 5000);
 }
 
 function setupLifecycleHandlers() {
