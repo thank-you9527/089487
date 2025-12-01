@@ -500,6 +500,27 @@ function clearAuthCookie(res) {
   res.clearCookie(AUTH_COOKIE_NAME, COOKIE_BASE);
 }
 
+function logAndClearAuthCookie(req, res, reason, statusCodeOverride) {
+  const ipHeader = req?.headers?.['x-forwarded-for'];
+  const ip = Array.isArray(ipHeader)
+    ? ipHeader[0]
+    : typeof ipHeader === 'string'
+    ? ipHeader.split(',')[0].trim()
+    : req?.ip;
+  const status = statusCodeOverride ?? res?.statusCode ?? 0;
+  const path = req?.originalUrl || req?.path || 'unknown-path';
+  const userAgent = req?.get ? req.get('user-agent') : req?.headers?.['user-agent'];
+  console.warn('[auth] clearing jwt cookie', {
+    method: req?.method,
+    path,
+    status,
+    reason,
+    ip,
+    userAgent
+  });
+  clearAuthCookie(res);
+}
+
 const itemsPath = path.join(__dirname, 'data', 'items.json');
 let itemsDB = [];
 async function loadItems() {
@@ -887,14 +908,14 @@ app.post('/api/logout', requireAuth, ensureActiveSession, async (req, res) => {
   } catch (err) {
     console.error('deleteSession failed', err);
   }
-  clearAuthCookie(res);
+  logAndClearAuthCookie(req, res, 'logout', 200);
   res.json({ ok: true });
 });
 
 app.post('/api/logout-beacon', async (req, res) => {
   const token = req.cookies?.[AUTH_COOKIE_NAME];
   if (!token) {
-    clearAuthCookie(res);
+    logAndClearAuthCookie(req, res, 'missing-jwt', 204);
     return res.status(204).end();
   }
   try {
@@ -905,8 +926,10 @@ app.post('/api/logout-beacon', async (req, res) => {
     }
   } catch (err) {
     console.error('logout-beacon failed', err);
+    logAndClearAuthCookie(req, res, 'logout-beacon-invalid-jwt', 204);
+    return res.status(204).end();
   }
-  clearAuthCookie(res);
+  logAndClearAuthCookie(req, res, 'logout-beacon', 204);
   res.status(204).end();
 });
 
