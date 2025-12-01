@@ -21,6 +21,14 @@
   </div>
   <button id="sidebarToggle" class="sidebar-toggle">☰</button>
 
+  <div id="connectionBanner" class="connection-banner hidden" data-state="ok">
+    <span id="connectionMessage">⚠️ 連線中斷/心跳失敗，指令已暫停</span>
+    <div class="connection-actions">
+      <button id="reconnectBtn" type="button">重新連線</button>
+      <button id="backToLoginBtn" type="button">返回登入</button>
+    </div>
+  </div>
+
   <!-- 遊戲主體 -->
   <div id="game">
     <div id="logContainer" class="log-container">

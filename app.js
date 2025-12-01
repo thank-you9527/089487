@@ -15,6 +15,10 @@ const sidebarMain = qs('#sidebarMain');
 const clearLogsBtn = qs('#clearLogsBtn');
 const exportLogsBtn = qs('#exportLogsBtn');
 const downloadBtn = qs('#downloadBtn');
+const connectionBanner = qs('#connectionBanner');
+const connectionMessage = qs('#connectionMessage');
+const reconnectBtn = qs('#reconnectBtn');
+const backToLoginBtn = qs('#backToLoginBtn');
 const currentUser = localStorage.getItem('currentUser');
 const logKey = currentUser ? `logs_${currentUser}` : 'logs';
 const storedLogs = JSON.parse(localStorage.getItem(logKey) || '[]');
@@ -40,11 +44,12 @@ let isAuthenticated = false;
 const HEARTBEAT_VISIBLE_MS = 60_000;
 const HEARTBEAT_HIDDEN_MS = 120_000;
 let heartbeatTimer = null;
-let heartbeatFailures = 0;
+let heartbeatFailCount = 0;
 let logoutBeaconSent = false;
 let eventSource = null;
 let idleTimer = null;
 let lastActivityAt = Date.now();
+let connectionState = 'ok';
 
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const MIN_IDLE_LOGOUT_MS = 30 * 1000;
@@ -77,6 +82,7 @@ function handleSessionExpired(message = '登入已失效，請重新登入') {
   if (sessionExpired) return;
   sessionExpired = true;
   isAuthenticated = false;
+  setConnectionState('offline', { message });
   stopHeartbeat();
   stopIdleTimer();
   if (eventSource) {
@@ -91,6 +97,40 @@ function handleSessionExpired(message = '登入已失效，請重新登入') {
   sessionStorage.removeItem('returnShown');
   localStorage.removeItem('currentUser');
   window.location.href = 'login.html';
+}
+
+function setConnectionState(state, options = {}) {
+  connectionState = state;
+  if (state === 'ok') {
+    heartbeatFailCount = 0;
+  }
+  if (!connectionBanner) return;
+  const message =
+    options.message ||
+    (state === 'offline'
+      ? '⚠️ 連線中斷/心跳失敗，指令已暫停'
+      : '⚠️ 連線狀態不穩，請稍後再試或點擊重新連線');
+  if (state === 'ok') {
+    connectionBanner.classList.add('hidden');
+    connectionBanner.dataset.state = 'ok';
+  } else {
+    connectionMessage.textContent = message;
+    connectionBanner.classList.remove('hidden');
+    connectionBanner.dataset.state = state;
+  }
+  if (state === 'offline') {
+    if (commandInput) commandInput.disabled = true;
+    if (sendBtn) sendBtn.disabled = true;
+    stopHeartbeat();
+    stopEventStream();
+  } else {
+    if (commandInput) commandInput.disabled = false;
+    if (sendBtn) sendBtn.disabled = false;
+  }
+  if (reconnectBtn) {
+    reconnectBtn.disabled = !!options.reconnecting;
+    reconnectBtn.textContent = options.reconnecting ? '重新連線中…' : '重新連線';
+  }
 }
 
 function stopIdleTimer() {
@@ -119,22 +159,57 @@ function recordActivity() {
 
 async function handleUnauthorizedResponse(res) {
   if (res.status !== 401) return false;
-  const data = await res.json().catch(() => ({}));
-  const code = data?.error;
-  const messages = {
-    'session-expired': '登入已過期，請重新登入',
-    'session-missing': '登入已失效，請重新登入',
-    'no-session': '登入已失效，請重新登入',
-    'bad-jwt': '登入資訊異常，請重新登入',
-    'no-cookie': '尚未登入或登入已失效，請重新登入',
-    'session-timeout': '已閒置登出，請重新登入'
-  };
-  if (code && messages[code]) {
-    handleSessionExpired(messages[code]);
-  } else {
-    handleSessionExpired();
+  let data = null;
+  let text = '';
+  try {
+    data = await res.clone().json();
+  } catch (err) {
+    try {
+      text = await res.text();
+    } catch (e) {
+      // ignore
+    }
   }
-  return true;
+  const code = data?.error || data?.code || null;
+  const shouldTreatAsMissingCookie = ['no-cookie', 'no-session', 'session-missing'].includes(code);
+  const fallbackError = code || text || 'unknown-401';
+
+  try {
+    const whoamiRes = await fetch('/api/whoami', { credentials: 'include' });
+    const whoamiData = await whoamiRes.json().catch(() => ({}));
+    if (whoamiRes.ok && whoamiData?.ok) {
+      setConnectionState('degraded', {
+        message: '伺服器暫時拒絕授權，請重試或點擊重新連線'
+      });
+      return true;
+    }
+    const whoamiCode = whoamiData?.error;
+    if (
+      whoamiRes.status === 401 &&
+      ['no-cookie', 'no-session', 'session-missing'].includes(whoamiCode)
+    ) {
+      handleSessionExpired('尚未登入或登入已失效，請重新登入');
+      return true;
+    }
+    setConnectionState('offline', {
+      message: '伺服器暫時拒絕授權，請稍後再試或點擊重新連線'
+    });
+    console.warn('[net] unauthorized treated as offline', {
+      lastStatus: whoamiRes.status,
+      lastError: whoamiCode || fallbackError
+    });
+    return true;
+  } catch (err) {
+    if (shouldTreatAsMissingCookie) {
+      handleSessionExpired('尚未登入或登入已失效，請重新登入');
+      return true;
+    }
+    setConnectionState('offline', {
+      message: '伺服器暫時拒絕授權，請稍後再試或點擊重新連線'
+    });
+    console.warn('[net] unauthorized fallback offline', { lastError: fallbackError });
+    return true;
+  }
 }
 
 function stopHeartbeat() {
@@ -145,45 +220,52 @@ function stopHeartbeat() {
 }
 
 async function sendHeartbeat() {
-  if (sessionExpired || !isAuthenticated) return false;
+  if (sessionExpired || !isAuthenticated || connectionState === 'offline') return false;
+  let res = null;
   try {
-    const res = await fetch('/api/ping', {
+    res = await fetch('/api/ping', {
       method: 'POST',
       credentials: 'include',
       keepalive: true
     });
     if (await handleUnauthorizedResponse(res)) return false;
     if (!res.ok) throw new Error('heartbeat failed');
-    heartbeatFailures = 0;
+    heartbeatFailCount = 0;
+    setConnectionState('ok');
     return true;
   } catch (err) {
-    heartbeatFailures += 1;
-    if (heartbeatFailures >= 3) {
-      appendBlock('連線異常，請檢查網路或稍後再試。');
+    heartbeatFailCount += 1;
+    const lastStatus = res?.status ?? 'fetch-error';
+    if (heartbeatFailCount >= 3) {
+      setConnectionState('offline', {
+        message: '⚠️ 連線中斷/心跳失敗，指令已暫停'
+      });
+      console.warn('[net] offline after 3 fails', { lastStatus, lastError: err?.message });
       stopHeartbeat();
+      stopEventStream();
     }
     return false;
   }
 }
 
 function scheduleHeartbeat() {
-  if (sessionExpired || !isAuthenticated) return;
+  if (sessionExpired || !isAuthenticated || connectionState === 'offline') return;
   stopHeartbeat();
   const interval = document.hidden ? HEARTBEAT_HIDDEN_MS : HEARTBEAT_VISIBLE_MS;
   heartbeatTimer = setTimeout(async () => {
     await sendHeartbeat();
-    if (!sessionExpired && heartbeatFailures < 3) {
+    if (!sessionExpired && heartbeatFailCount < 3) {
       scheduleHeartbeat();
     }
   }, interval);
 }
 
 function startHeartbeat() {
-  if (!isAuthenticated) return;
-  heartbeatFailures = 0;
+  if (!isAuthenticated || connectionState === 'offline') return;
+  heartbeatFailCount = 0;
   stopHeartbeat();
   sendHeartbeat().finally(() => {
-    if (!sessionExpired && isAuthenticated && heartbeatFailures < 3) {
+    if (!sessionExpired && isAuthenticated && heartbeatFailCount < 3) {
       scheduleHeartbeat();
     }
   });
@@ -200,6 +282,7 @@ function stopEventStream() {
 }
 
 function startEventStream() {
+  if (connectionState === 'offline') return;
   stopEventStream();
   try {
     eventSource = new EventSource('/api/events', { withCredentials: true });
@@ -279,6 +362,37 @@ function setupLifecycleHandlers() {
   });
 }
 
+async function attemptReconnect() {
+  setConnectionState('offline', { message: '重新連線中…', reconnecting: true });
+  try {
+    const res = await fetch('/api/whoami', { credentials: 'include' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data?.ok) {
+      isAuthenticated = true;
+      sessionExpired = false;
+      setConnectionState('ok');
+      startEventStream();
+      startHeartbeat();
+      recordActivity();
+      return;
+    }
+    if (
+      res.status === 401 &&
+      ['no-cookie', 'no-session', 'session-missing'].includes(data?.error)
+    ) {
+      handleSessionExpired('尚未登入或登入已失效，請重新登入');
+      return;
+    }
+    setConnectionState('offline', {
+      message: '重新連線失敗，請稍後再試或返回登入'
+    });
+  } catch (err) {
+    setConnectionState('offline', {
+      message: '重新連線失敗，請稍後再試'
+    });
+  }
+}
+
 async function ensureCharacter() {
   const res = await fetch('/api/character', { credentials: 'include' });
   if (await handleUnauthorizedResponse(res)) return false;
@@ -309,6 +423,7 @@ async function ensureCharacter() {
     return false;
   }
   isAuthenticated = true;
+  setConnectionState('ok');
   recordActivity();
   return true;
 }
@@ -369,6 +484,10 @@ function initialMessage() {
 on(sendBtn, 'click', async () => {
   const text = commandInput.value.trim();
   if (!text) return;
+  if (connectionState === 'offline') {
+    appendBlock('連線中斷，請先點擊上方「重新連線」後再試。');
+    return;
+  }
   try {
     const res = await fetch('/api/command', {
       method: 'POST',
@@ -377,7 +496,7 @@ on(sendBtn, 'click', async () => {
       credentials: 'include'
     });
     if (res.status === 401) {
-      appendBlock('登入已過期，請重新登入。');
+      appendBlock('伺服器暫時拒絕授權，請稍後再試或點擊「重新連線」。');
       await handleUnauthorizedResponse(res);
       return;
     }
@@ -526,6 +645,16 @@ on(exportLogsBtn, 'click', () => {
     URL.revokeObjectURL(url);
     downloadBtn.classList.add('hidden');
   };
+});
+
+on(reconnectBtn, 'click', () => {
+  if (connectionState === 'offline' || connectionState === 'degraded') {
+    attemptReconnect();
+  }
+});
+
+on(backToLoginBtn, 'click', () => {
+  window.location.href = 'login.html';
 });
 
 setupLifecycleHandlers();

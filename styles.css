@@ -4,6 +4,44 @@ body {
   background: #f2f2f2;
 }
 
+.connection-banner {
+  position: sticky;
+  top: 0;
+  z-index: 1050;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  gap: 10px;
+  background: #fff7e6;
+  color: #8a6d3b;
+  border-bottom: 1px solid #f0ad4e;
+  font-size: 14px;
+}
+
+.connection-banner[data-state='offline'] {
+  background: #fff2f0;
+  color: #a8071a;
+  border-bottom: 1px solid #ffccc7;
+}
+
+.connection-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.connection-actions button {
+  padding: 4px 10px;
+  border: 1px solid #ccc;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.connection-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 #game {
   display: flex;
   flex-direction: column;
