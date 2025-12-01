@@ -21,18 +21,20 @@
   </div>
   <button id="sidebarToggle" class="sidebar-toggle">☰</button>
 
+  <div id="connectionBanner" class="connection-banner hidden" data-state="ok">
+    <span id="connectionMessage">⚠️ 連線中斷/心跳失敗，指令已暫停</span>
+    <div class="connection-actions">
+      <button id="reconnectBtn" type="button">重新連線</button>
+      <button id="backToLoginBtn" type="button">返回登入</button>
+    </div>
+  </div>
+
   <!-- 遊戲主體 -->
   <div id="game">
-    <div id="logContainer" class="log-container">
-      <div class="log-header">
-        <input id="searchInput" class="search-input hidden" maxlength="100" placeholder="搜尋..." />
-        <button id="searchToggle" class="search-btn">🔍</button>
-      </div>
-      <div id="logs" class="logs"></div>
-    </div>
-    <div id="commandBar" class="command-bar">
+    <div id="chat" class="chat"></div>
+    <div id="composer" class="composer">
       <textarea id="commandInput" maxlength="500" rows="2" placeholder="輸入指令..." class="command-input"></textarea>
-      <button id="sendBtn" class="send-btn">➤</button>
+      <button id="sendBtn" class="send-btn">送出</button>
     </div>
   </div>
 

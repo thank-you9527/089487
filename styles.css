@@ -4,65 +4,153 @@ body {
   background: #f2f2f2;
 }
 
+.connection-banner {
+  position: sticky;
+  top: 0;
+  z-index: 1050;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  gap: 10px;
+  background: #fff7e6;
+  color: #8a6d3b;
+  border-bottom: 1px solid #f0ad4e;
+  font-size: 14px;
+}
+
+.connection-banner[data-state='offline'] {
+  background: #fff2f0;
+  color: #a8071a;
+  border-bottom: 1px solid #ffccc7;
+}
+
+.connection-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.connection-actions button {
+  padding: 4px 10px;
+  border: 1px solid #ccc;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.connection-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 #game {
   display: flex;
   flex-direction: column;
   height: 100vh;
 }
 
-.log-container {
-  position: relative;
+.chat {
   flex: 1;
   overflow-y: auto;
-  padding: 10px;
-  background: #ffffff;
+  padding: 12px;
+  background: #e5ddd5;
   display: flex;
   flex-direction: column;
+  gap: 10px;
 }
 
-.log-header {
+.chat-row {
   display: flex;
+  width: 100%;
+}
+
+.player-row {
   justify-content: flex-end;
-  position: sticky;
-  top: 0;
+}
+
+.server-row,
+.system-row {
+  justify-content: flex-start;
+}
+
+.chat-bubble {
+  max-width: 70%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  position: relative;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+  animation: fadeIn 0.15s ease;
+}
+
+.chat-bubble.player {
+  background: #d0f0c0;
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-bubble.server,
+.chat-bubble.system {
   background: #ffffff;
+  border-bottom-left-radius: 4px;
 }
 
-.logs {
-  flex: 1;
-}
-
-.logs p {
-  margin: 4px 0;
-  text-align: left;
+.chat-text {
   white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.search-btn,
-.search-input {
-  margin-left: 5px;
-  padding: 4px;
+.chat-ts {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #6b6b6b;
+  text-align: right;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #f7f7f7;
+  border-top: 1px solid #ddd;
+}
+
+.command-input {
+  flex: 1;
+  resize: none;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  font-size: 14px;
+  min-height: 48px;
+}
+
+.send-btn {
+  padding: 0 16px;
+  border: none;
+  background: #4caf50;
+  color: #fff;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.send-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .hidden {
   display: none;
 }
 
-.command-bar {
-  display: flex;
-  padding: 5px;
-  background: #dddddd;
-}
-
-.command-input {
-  flex: 1;
-  resize: none;
-  padding: 5px;
-  text-align: left;
-}
-
-.send-btn {
-  width: 40px;
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .sidebar {
