@@ -509,12 +509,14 @@ function logAndClearAuthCookie(req, res, reason, statusCodeOverride) {
     : req?.ip;
   const status = statusCodeOverride ?? res?.statusCode ?? 0;
   const path = req?.originalUrl || req?.path || 'unknown-path';
+  const routePath = req?.route?.path || null;
   const userAgent = req?.get ? req.get('user-agent') : req?.headers?.['user-agent'];
   console.warn('[auth] clearing jwt cookie', {
     method: req?.method,
     path,
+    routePath,
     status,
-    reason,
+    reason: reason || 'unspecified',
     ip,
     userAgent
   });

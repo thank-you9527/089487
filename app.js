@@ -42,8 +42,14 @@ const HEARTBEAT_HIDDEN_MS = 120_000;
 let heartbeatTimer = null;
 let heartbeatFailures = 0;
 let logoutBeaconSent = false;
-let pendingBeaconTimer = null;
+let logoutBeaconCooldownTimer = null;
 let eventSource = null;
+let idleTimer = null;
+let lastActivityAt = Date.now();
+
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const MIN_IDLE_LOGOUT_MS = 30 * 1000;
+const EFFECTIVE_IDLE_TIMEOUT_MS = Math.max(IDLE_TIMEOUT_MS, MIN_IDLE_LOGOUT_MS);
 
 function normalizeLines(input) {
   if (Array.isArray(input)) {
@@ -73,6 +79,7 @@ function handleSessionExpired(message = '登入已失效，請重新登入') {
   sessionExpired = true;
   isAuthenticated = false;
   stopHeartbeat();
+  stopIdleTimer();
   if (eventSource) {
     try {
       eventSource.close();
@@ -85,6 +92,30 @@ function handleSessionExpired(message = '登入已失效，請重新登入') {
   sessionStorage.removeItem('returnShown');
   localStorage.removeItem('currentUser');
   window.location.href = 'login.html';
+}
+
+function stopIdleTimer() {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
+}
+
+function scheduleIdleTimer() {
+  stopIdleTimer();
+  if (sessionExpired || !isAuthenticated) return;
+  const elapsed = Date.now() - lastActivityAt;
+  const remaining = Math.max(EFFECTIVE_IDLE_TIMEOUT_MS - elapsed, MIN_IDLE_LOGOUT_MS);
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    handleSessionExpired('已閒置登出，請重新登入');
+  }, remaining);
+}
+
+function recordActivity() {
+  if (sessionExpired || !isAuthenticated) return;
+  lastActivityAt = Date.now();
+  scheduleIdleTimer();
 }
 
 async function handleUnauthorizedResponse(res) {
@@ -200,8 +231,9 @@ function startEventStream() {
   });
 }
 
-function sendLogoutBeacon() {
+function sendLogoutBeacon(trigger) {
   if (sessionExpired || !isAuthenticated) return;
+  if (trigger !== 'user-logout' && trigger !== 'beforeunload') return;
   if (logoutBeaconSent) return;
   logoutBeaconSent = true;
   try {
@@ -222,46 +254,31 @@ function sendLogoutBeacon() {
       keepalive: true
     }).catch(() => {});
   }
-  setTimeout(() => {
-    logoutBeaconSent = false;
-  }, 5000);
-}
-
-function scheduleLogoutBeacon() {
-  if (pendingBeaconTimer) {
-    clearTimeout(pendingBeaconTimer);
-    pendingBeaconTimer = null;
+  if (logoutBeaconCooldownTimer) {
+    clearTimeout(logoutBeaconCooldownTimer);
+    logoutBeaconCooldownTimer = null;
   }
-  if (sessionExpired || !isAuthenticated) return;
-  pendingBeaconTimer = setTimeout(() => {
-    pendingBeaconTimer = null;
-    sendLogoutBeacon();
-  }, 2000);
+  logoutBeaconCooldownTimer = setTimeout(() => {
+    logoutBeaconSent = false;
+    logoutBeaconCooldownTimer = null;
+  }, 5000);
 }
 
 function setupLifecycleHandlers() {
   document.addEventListener('visibilitychange', () => {
     if (sessionExpired || !isAuthenticated) return;
-    if (document.visibilityState === 'hidden') {
-      scheduleLogoutBeacon();
-    } else {
-      if (pendingBeaconTimer) {
-        clearTimeout(pendingBeaconTimer);
-        pendingBeaconTimer = null;
-      }
-      logoutBeaconSent = false;
-    }
     scheduleHeartbeat();
+    recordActivity();
   });
 
-  window.addEventListener('pagehide', () => {
-    if (sessionExpired || !isAuthenticated) return;
-    sendLogoutBeacon();
+  const activityEvents = ['click', 'keydown', 'mousemove', 'touchstart'];
+  activityEvents.forEach(evt => {
+    document.addEventListener(evt, () => recordActivity(), { capture: true });
   });
 
   window.addEventListener('beforeunload', () => {
     if (sessionExpired || !isAuthenticated) return;
-    sendLogoutBeacon();
+    sendLogoutBeacon('beforeunload');
   });
 }
 
@@ -287,6 +304,7 @@ async function ensureCharacter() {
       return false;
     }
     isAuthenticated = true;
+    recordActivity();
     return true;
   }
   if (!res.ok) {
@@ -294,6 +312,7 @@ async function ensureCharacter() {
     return false;
   }
   isAuthenticated = true;
+  recordActivity();
   return true;
 }
 
@@ -446,10 +465,12 @@ on(sidebarToggle, 'click', () => {
 
 on(logoutBtn, 'click', async () => {
   if (confirm('是否登出？')) {
+    sendLogoutBeacon('user-logout');
     try {
       const res = await fetch('/api/logout', { method: 'POST', credentials: 'include' });
       if (res.ok) {
         isAuthenticated = false;
+        stopIdleTimer();
         stopHeartbeat();
         stopEventStream();
         sessionStorage.removeItem('returnShown');
