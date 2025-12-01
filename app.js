@@ -1,12 +1,9 @@
 const qs = (selector, root = document) => root.querySelector(selector);
 const on = (el, event, handler) => el && el.addEventListener(event, handler);
 
-const logContainer = qs('#logContainer');
-const logsDiv = qs('#logs');
+const chatContainer = qs('#chat');
 const sendBtn = qs('#sendBtn');
 const commandInput = qs('#commandInput');
-const searchToggle = qs('#searchToggle');
-const searchInput = qs('#searchInput');
 const sidebar = qs('#sidebar');
 const sidebarToggle = qs('#sidebarToggle');
 const logoutBtn = qs('#logoutBtn');
@@ -20,25 +17,8 @@ const connectionMessage = qs('#connectionMessage');
 const reconnectBtn = qs('#reconnectBtn');
 const backToLoginBtn = qs('#backToLoginBtn');
 const currentUser = localStorage.getItem('currentUser');
-const logKey = currentUser ? `logs_${currentUser}` : 'logs';
-const storedLogs = JSON.parse(localStorage.getItem(logKey) || '[]');
-let logs = Array.isArray(storedLogs)
-  ? storedLogs.map(entry => {
-      if (entry && Array.isArray(entry.lines)) {
-        return {
-          date: entry.date || new Date().toISOString(),
-          lines: entry.lines.map(line => String(line ?? ''))
-        };
-      }
-      const text = typeof entry?.text === 'string' ? entry.text : '';
-      const legacyLines = text ? String(text).split('\n') : [];
-      return {
-        date: entry?.date || new Date().toISOString(),
-        lines: legacyLines.length > 0 ? legacyLines : ['']
-      };
-    })
-  : [];
-let loadedCount = 10; // 每次顯示的筆數
+
+const chatLog = [];
 let sessionExpired = false;
 let isAuthenticated = false;
 const HEARTBEAT_VISIBLE_MS = 60_000;
@@ -55,27 +35,81 @@ const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const MIN_IDLE_LOGOUT_MS = 30 * 1000;
 const EFFECTIVE_IDLE_TIMEOUT_MS = Math.max(IDLE_TIMEOUT_MS, MIN_IDLE_LOGOUT_MS);
 
-function normalizeLines(input) {
-  if (Array.isArray(input)) {
-    return input.flatMap(line => {
-      if (line == null) return [''];
-      return String(line)
-        .split('\n')
-        .map(chunk => chunk);
-    });
-  }
-  if (input == null) return [''];
-  return String(input)
-    .split('\n')
-    .map(chunk => chunk);
+function formatTimestamp(ts) {
+  return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function appendBlock(lines) {
-  const normalized = normalizeLines(lines).map(line => line);
-  const entry = { date: new Date().toISOString(), lines: normalized };
-  logs.push(entry);
-  localStorage.setItem(logKey, JSON.stringify(logs));
-  renderLogs();
+function createMessageElement({ role, text, ts }) {
+  const wrapper = document.createElement('div');
+  wrapper.className = `chat-row ${role}-row`;
+
+  const bubble = document.createElement('div');
+  bubble.className = `chat-bubble ${role}`;
+
+  const textEl = document.createElement('div');
+  textEl.className = 'chat-text';
+  const lines = text.split('\n');
+  lines.forEach((line, idx) => {
+    const span = document.createElement('span');
+    span.textContent = line;
+    textEl.appendChild(span);
+    if (idx < lines.length - 1) {
+      textEl.appendChild(document.createElement('br'));
+    }
+  });
+
+  const tsEl = document.createElement('div');
+  tsEl.className = 'chat-ts';
+  tsEl.textContent = formatTimestamp(ts);
+
+  bubble.appendChild(textEl);
+  bubble.appendChild(tsEl);
+  wrapper.appendChild(bubble);
+  return wrapper;
+}
+
+function appendMessage({ role = 'system', text = '', ts = Date.now() }) {
+  const atBottom = chatContainer
+    ? chatContainer.scrollTop + chatContainer.clientHeight >= chatContainer.scrollHeight - 20
+    : true;
+
+  const message = { role, text: String(text ?? ''), ts };
+  chatLog.push(message);
+
+  if (chatContainer) {
+    const el = createMessageElement(message);
+    chatContainer.appendChild(el);
+    if (atBottom) {
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+  }
+}
+
+function renderServerResponse(data) {
+  const candidate = data?.block ?? data?.lines ?? data?.logs ?? data?.result;
+  if (Array.isArray(candidate)) {
+    if (candidate.every(item => Array.isArray(item))) {
+      candidate.forEach(block => {
+        appendMessage({ role: 'server', text: block.map(line => String(line ?? '')).join('\n') });
+      });
+    } else {
+      appendMessage({ role: 'server', text: candidate.map(line => String(line ?? '')).join('\n') });
+    }
+    return;
+  }
+  if (Array.isArray(data?.blocks)) {
+    data.blocks.forEach(block => {
+      appendMessage({ role: 'server', text: block.map(line => String(line ?? '')).join('\n') });
+    });
+    return;
+  }
+  if (typeof data?.message === 'string') {
+    appendMessage({ role: 'server', text: data.message });
+    return;
+  }
+  if (typeof data?.error === 'string') {
+    appendMessage({ role: 'system', text: `伺服器回應錯誤：${data.error}` });
+  }
 }
 
 function handleSessionExpired(message = '登入已失效，請重新登入') {
@@ -294,16 +328,7 @@ function startEventStream() {
     if (!evt?.data) return;
     try {
       const payload = JSON.parse(evt.data);
-      const candidate = payload?.block ?? payload?.lines ?? payload?.logs;
-      if (Array.isArray(candidate)) {
-        if (candidate.every(item => Array.isArray(item))) {
-          candidate.forEach(block => appendBlock(block));
-        } else if (candidate.length > 0) {
-          appendBlock(candidate);
-        }
-      } else if (typeof payload?.message === 'string') {
-        appendBlock(payload.message);
-      }
+      renderServerResponse(payload);
     } catch (err) {
       console.error('failed to parse event payload', err);
     }
@@ -411,7 +436,7 @@ async function ensureCharacter() {
     });
     if (await handleUnauthorizedResponse(createRes)) return false;
     if (!createRes.ok) {
-      appendBlock('建立角色失敗，請稍後再試。');
+      appendMessage({ role: 'system', text: '建立角色失敗，請稍後再試。' });
       return false;
     }
     isAuthenticated = true;
@@ -419,7 +444,7 @@ async function ensureCharacter() {
     return true;
   }
   if (!res.ok) {
-    appendBlock('無法讀取角色資料，請稍後再試。');
+    appendMessage({ role: 'system', text: '無法讀取角色資料，請稍後再試。' });
     return false;
   }
   isAuthenticated = true;
@@ -428,54 +453,16 @@ async function ensureCharacter() {
   return true;
 }
 
-function createLogFragment(entry) {
-  const fragment = document.createDocumentFragment();
-  const timestampLine = document.createElement('p');
-  timestampLine.className = 'log-timestamp';
-  timestampLine.textContent = `[${new Date(entry.date).toLocaleString()}]`;
-  fragment.appendChild(timestampLine);
-
-  const lines = Array.isArray(entry.lines)
-    ? entry.lines
-    : String(entry.text ?? '').split('\n');
-  if (lines.length === 0) {
-    const emptyLine = document.createElement('p');
-    emptyLine.className = 'log-message';
-    fragment.appendChild(emptyLine);
-  } else {
-    lines.forEach((line) => {
-      const messageLine = document.createElement('p');
-      messageLine.className = 'log-message';
-      messageLine.textContent = line;
-      fragment.appendChild(messageLine);
-    });
-  }
-
-  return fragment;
-}
-
-function renderLogs() {
-  logsDiv.innerHTML = '';
-  const start = Math.max(0, logs.length - loadedCount);
-  const fragment = document.createDocumentFragment();
-  logs.slice(start).forEach((entry) => {
-    fragment.appendChild(createLogFragment(entry));
-  });
-  logsDiv.appendChild(fragment);
-  logContainer.scrollTop = logContainer.scrollHeight;
-}
-
 function initialMessage() {
   const firstVisitKey = `visited_${currentUser}`;
   const firstVisit = !localStorage.getItem(firstVisitKey);
   const returnShown = sessionStorage.getItem('returnShown');
   if (firstVisit) {
-    appendBlock('歡迎您來到遊戲的世界，輸入help以查看指令！');
+    appendMessage({ role: 'system', text: '歡迎您來到遊戲的世界，輸入help以查看指令！' });
     localStorage.setItem(firstVisitKey, 'true');
   } else {
-    renderLogs();
     if (!returnShown) {
-      appendBlock('歡迎您回到遊戲的世界，繼續冒險吧！');
+      appendMessage({ role: 'system', text: '歡迎您回到遊戲的世界，繼續冒險吧！' });
       sessionStorage.setItem('returnShown', 'true');
     }
   }
@@ -485,9 +472,11 @@ on(sendBtn, 'click', async () => {
   const text = commandInput.value.trim();
   if (!text) return;
   if (connectionState === 'offline') {
-    appendBlock('連線中斷，請先點擊上方「重新連線」後再試。');
+    appendMessage({ role: 'system', text: '連線中斷，請先點擊上方「重新連線」後再試。' });
     return;
   }
+  appendMessage({ role: 'player', text, ts: Date.now() });
+  commandInput.value = '';
   try {
     const res = await fetch('/api/command', {
       method: 'POST',
@@ -496,14 +485,20 @@ on(sendBtn, 'click', async () => {
       credentials: 'include'
     });
     if (res.status === 401) {
-      appendBlock('伺服器暫時拒絕授權，請稍後再試或點擊「重新連線」。');
+      appendMessage({
+        role: 'system',
+        text: '伺服器暫時拒絕授權，請稍後再試或點擊「重新連線」。'
+      });
       await handleUnauthorizedResponse(res);
       return;
     }
     if (res.status === 429) {
       const data = await res.json().catch(() => ({}));
       const retry = data?.retryAfter;
-      appendBlock(retry ? `操作太快，請於 ${retry} 秒後再試。` : '操作太快，請稍後再試。');
+      appendMessage({
+        role: 'system',
+        text: retry ? `操作太快，請於 ${retry} 秒後再試。` : '操作太快，請稍後再試。'
+      });
       return;
     }
     if (!res.ok) {
@@ -511,67 +506,22 @@ on(sendBtn, 'click', async () => {
       const message = textResp
         ? `伺服器錯誤(${res.status})：${textResp}`
         : `伺服器錯誤(${res.status})：請稍後再試`;
-      appendBlock(message);
+      appendMessage({ role: 'system', text: message });
       return;
     }
     const data = await res.json().catch(() => null);
     if (!data) {
-      appendBlock('伺服器回傳格式錯誤，請稍後再試。');
+      appendMessage({ role: 'system', text: '伺服器回傳格式錯誤，請稍後再試。' });
       return;
     }
     if (data.ok === false) {
       const message = typeof data.error === 'string' ? data.error : '指令執行失敗';
-      appendBlock(`指令失敗：${message}`);
+      appendMessage({ role: 'system', text: `指令失敗：${message}` });
       return;
     }
-    const candidate = data.block ?? data.lines ?? data.logs ?? data.result;
-    if (Array.isArray(candidate)) {
-      if (candidate.every(item => Array.isArray(item))) {
-        candidate.forEach(block => appendBlock(block));
-      } else {
-        appendBlock(candidate);
-      }
-    } else if (Array.isArray(data?.blocks)) {
-      data.blocks.forEach(block => appendBlock(block));
-    } else if (typeof data?.message === 'string') {
-      appendBlock(data.message);
-    }
+    renderServerResponse(data);
   } catch (e) {
-    appendBlock('無法連線到伺服器');
-  } finally {
-    commandInput.value = '';
-  }
-});
-
-on(searchToggle, 'click', () => {
-  if (searchInput.classList.contains('hidden')) {
-    searchInput.classList.remove('hidden');
-    searchInput.focus();
-  } else {
-    const keyword = searchInput.value.trim();
-    if (keyword) {
-      const result = logs.filter((l) => {
-        const joined = Array.isArray(l.lines) ? l.lines.join('\n') : String(l.text ?? '');
-        return joined.includes(keyword);
-      });
-      logsDiv.innerHTML = '';
-      const fragment = document.createDocumentFragment();
-      result.forEach((entry) => {
-        fragment.appendChild(createLogFragment(entry));
-      });
-      logsDiv.appendChild(fragment);
-    } else {
-      searchInput.classList.add('hidden');
-      renderLogs();
-    }
-  }
-});
-
-on(logContainer, 'scroll', () => {
-  if (logContainer.scrollTop === 0 && loadedCount < logs.length) {
-    loadedCount += 10;
-    renderLogs();
-    logContainer.scrollTop = 1; // 防止連續觸發
+    appendMessage({ role: 'system', text: '無法連線到伺服器' });
   }
 });
 
@@ -596,7 +546,7 @@ on(logoutBtn, 'click', async () => {
         await handleUnauthorizedResponse(res);
       }
     } catch (e) {
-      appendBlock('登出時發生錯誤，請稍後再試。');
+      appendMessage({ role: 'system', text: '登出時發生錯誤，請稍後再試。' });
     }
   }
 });
@@ -617,18 +567,16 @@ document.addEventListener('keydown', (event) => {
 
 on(clearLogsBtn, 'click', () => {
   if (confirm('確定清除文字資料？')) {
-    localStorage.removeItem(logKey);
-    logs = [];
-    renderLogs();
+    chatLog.length = 0;
+    if (chatContainer) chatContainer.innerHTML = '';
   }
 });
 
 on(exportLogsBtn, 'click', () => {
-  const content = logs
-    .map((l) => {
-      const header = `[${new Date(l.date).toLocaleString()}]`;
-      const body = Array.isArray(l.lines) ? l.lines.join('\n') : String(l.text ?? '');
-      return `${header}\n${body}`;
+  const content = chatLog
+    .map(msg => {
+      const prefix = `[${new Date(msg.ts).toLocaleString()}] ${msg.role}`;
+      return `${prefix}: ${msg.text}`;
     })
     .join('\n');
   const blob = new Blob([content], { type: 'text/plain' });
